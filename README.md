@@ -126,7 +126,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 148 passed
+python -m pytest -q                                     # -> 196 passed
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -162,7 +162,8 @@ may use a database in mock mode: on startup it takes an exclusive lock file next
 (`$DB_PATH.mock.lock`) and exits with a clear error if another process holds it (do not use
 `uvicorn --workers N` with the mock). Only after taking the lock does it treat open mock orders from a
 previous run as lost: they are marked `MOCK_RESET` and their reservations released (completed orders stay
-as history). Use a fresh `DB_PATH` for a clean demo. Sandbox mode has no such restriction.
+as history). The CLI takes the same lock when `CLI_DB_PATH` points at a file (it refuses, exit code 3, while
+a mock server holds it). Use a fresh `DB_PATH` for a clean demo. Sandbox mode has no such restriction.
 
 **Switching modes.** Exported variables win over `.env`, and the offline block sets `AGENT_MODE`,
 `PAYPAL_MODE` and `GRB_NO_DOTENV=1` (which disables `.env` entirely). Before following the Claude or
@@ -183,8 +184,9 @@ The defaults run with a **mock PayPal** (no PayPal account, no network) and the 
 > **About the offline agent.** `AGENT_MODE=offline` swaps Claude for a small deterministic, rule-based
 > parser (`app/offline_agent.py`, clearly **not** AI) with a **positive-only grammar**:
 > `[buy|get|order|purchase|need] <quantity> <catalog item> [for/as <short purpose>]`, clauses joined by
-> commas, "and", "plus" or ";"; `<quantity>` is a non-negative whole number or a/an/one…ten/pair/dozen and
-> item words must come from the catalog vocabulary. Anything else ("Avoid buying …", "… only when
+> commas, "and", "plus" or ";"; `<quantity>` is a non-negative whole number or a/an/one…ten/pair/dozen, read only from the slot
+> right before the item ("two three cables" is refused as ambiguous), and item words must come from the
+> catalog vocabulary. Anything else ("Avoid buying …", "… only when
 > approved", "Buy -1 …", "1.5", unknown verbs or words) is refused as a whole with the supported grammar in
 > the reply, and quantity 0 is never ordered. It calls the *same* tools through the *same* `BuyerService`, so every guardrail, PayPal order,
 > approval and refusal behaves exactly as with Claude; the dashboard header shows
@@ -197,7 +199,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `148 passed` (no network, no API key needed).
+1. **Run the tests** — `python -m pytest -q` → see `196 passed` (no network, no API key needed).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -217,7 +219,8 @@ return / cancel links and the mock checkout).
    `curl -X POST -H 'X-Approver-Token: demo' localhost:8000/approvals/<APR-id>/approve` → a new order
    linked to the approval, awaiting the buyer; `GET /spend` shows `total: 114.98`. Without the token → `401`.
 7. **Or reject it** — **Reject** / `POST /approvals/<APR-id>/reject` → status `REJECTED`, no money moves.
-8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`; without a key: `AGENT_MODE=offline python -m app.cli "…"`, sample in `docs/sample_offline_run.txt`). The CLI starts from an empty in-memory ledger each run (`CLI_DB_PATH=guardrail.db` to share the server's).
+8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`; without a key: `AGENT_MODE=offline python -m app.cli "…"`, sample in `docs/sample_offline_run.txt`). The CLI starts from an empty in-memory ledger each run. `CLI_DB_PATH=<file>` makes it use a database file; in mock mode the CLI must then own that file exclusively (same lock as the server) and exits with code 3 while a mock server uses it, so do **not** point the CLI at a running mock server's database. Sharing a database between CLI and server works only in Sandbox mode.
+9. **Audit every decision** — open the **Audit** tab (or `curl localhost:8000/decisions`) → one row per guardrail decision: the gift card is a red `deny` (rule hit `merchant_blocklist`/`category_allowlist`), the keyboard an amber `approval` (`per_order_cap`), an order whose payment is unconfirmed is highlighted orange. Filter any column, search with the box, **Export CSV**, and click a row → quote, every rule evaluated and the payment timeline (`CREATING → PAYER_ACTION_REQUIRED → CAPTURING → COMPLETED`). Headless check without a browser: `node scripts/ui_smoke_jsdom.cjs http://127.0.0.1:8000` (needs `npm i jsdom@24`).
 
 ### Against the real PayPal Sandbox
 
@@ -276,6 +279,8 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 | POST | `/approvals/{id}/reject` | reject, nothing is paid (same token) |
 | GET | `/paypal/return?token=…` | PayPal redirect after buyer approval → capture |
 | GET | `/paypal/cancel?token=…&state=…` | PayPal redirect on cancel → requires the signed `state` from the order's cancel_url (`403` otherwise); cancels only if still awaiting the buyer |
+| GET | `/decisions` | audit log: every guardrail decision (policy check, create order, approval request, approval execution) with verdict, rule hit, amount, merchant, request id, timestamp and the current status of the order/approval it led to (`?limit=`, newest first) |
+| GET | `/decisions/{id}` | one decision: quote, every rule evaluated (PASS / DENY / NEEDS_APPROVAL / WAIVED / SKIPPED), approval, and the order's payment timeline (status transitions) |
 | GET | `/spend` | today's captured / reserved / remaining vs caps |
 | GET | `/policy` | active policy + today's spend |
 | GET | `/` | AG Grid dashboard |
@@ -298,7 +303,7 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 | `PAYPAL_APPROVAL_TTL_MIN` | `180` | unapproved orders expire and release their reservation |
 | `APPROVER_TOKEN` | – | required for approve / reject / cancel. Empty = those endpoints answer `503` (fail closed) |
 | `DEMO_MODE` | `0` | `1` = explicit local demo: an empty `APPROVER_TOKEN` leaves approve / reject / cancel open (logs a warning) |
-| `AGENT_RATE_LIMIT` | `20/60` | max `/agent/request` calls per client IP per window (`N/SECONDS`); `off` disables. In-memory, per process |
+| `AGENT_RATE_LIMIT` | `20/60` | max `/agent/request` calls per client IP per window (`N/SECONDS`, both positive whole numbers); `off` disables. Anything else (e.g. `0/60`) stops the server at startup with a clear error. In-memory, per process |
 | `STATE_SECRET` | random, stored in the DB | HMAC key for the signed cancel `state` |
 | `PORT`, `GRB_INSTANCE` | – | used by the README launch/ready check only (`GRB_INSTANCE` is echoed by `/health`) |
 | `POLICY_PATH`, `CATALOG_PATH`, `DB_PATH` | `policy.yaml`, `data/catalog.json`, `guardrail.db` | |
@@ -312,6 +317,7 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 - [x] Live run against the PayPal Sandbox: orders created, live status, capture-before-approval handled, cancel (`scripts/sandbox_smoke.py`)
 - [ ] Full buyer payment with a Sandbox personal account, recorded for the video
 - [x] AG Grid dashboard for orders, approvals and spend, approver token
+- [x] AG Grid **Audit** tab: every guardrail decision with column filters, quick search, risk highlighting, CSV export and a detail panel (quote, rules evaluated, payment timeline)
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
 - [~] Demo video: draft pipeline done; real Sandbox buyer-approval clip pending
 
@@ -350,12 +356,21 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
   hand.
 - **Mock PayPal state is in memory and mock mode is single-process** (reviews B9/N3): an exclusive lock
   file next to the DB enforces one mock server per database. See the offline block above.
+- **Upgrading a database from an older version** (before `capture_unknown` existed) is conservative: every
+  order that was `NEEDS_RECONCILIATION` or `CAPTURING` is treated as "a capture may have happened", so it
+  stays reserved and can no longer be cancelled or expired, only resolved forward with
+  `POST /orders/{id}/reconcile` once PayPal reports it `COMPLETED`, declined or `VOIDED`. Stop all servers
+  before upgrading, and back up the `.db` file first. Older orders get no audit timeline (the detail panel
+  shows only their creation and current status), and decisions made before the upgrade are not in the audit log.
 - **Concurrency guarantees assume one SQLite file on local disk** shared by all server processes (SQLite
   locking is unreliable on network file systems).
 - **The offline agent is a restricted grammar**, not a language model: positive shopping lists only, item
-  words from the catalog vocabulary. The optional `for …`/`as …` purpose tail is a free-text label (never
-  executed) checked against a short list of condition/negation words; everything that is executed
-  (verb, quantity, item) is validated positively.
+  words from the catalog vocabulary. Each clause is parsed once into verb / quantity / item / purpose; only
+  the quantity slot directly before the item and the item phrase decide what is ordered (so "Buy a USB-C
+  cable for two interns" orders one cable). The optional `for …`/`as …` purpose tail is not used for
+  quantity or item selection; it is only screened against a short list of condition/negation words (a
+  denylist, so it is not a complete guarantee that unusual wording there is meaningless to a human
+  reader). Verb, quantity and item are validated positively.
 - **A full real Sandbox buyer approval + capture is not yet recorded.** Live Sandbox runs so far cover order
   creation, live status, capture-before-approval refusal and cancel (`docs/sandbox_smoke_run.txt`); the
   buyer-approval → capture loop is tested against the mock and a wire-format fake of the Sandbox API.

@@ -36,6 +36,13 @@
 
   <section class="kpis" id="kpis"></section>
 
+  <nav class="tabs" role="tablist">
+    <button class="tab active" role="tab" id="tab-ops" data-view="view-ops" aria-selected="true">Operations</button>
+    <button class="tab" role="tab" id="tab-audit" data-view="view-audit" aria-selected="false">Audit <span id="audit-count" class="count"></span></button>
+  </nav>
+
+  <div id="view-ops" class="view">
+
   <section class="card">
     <div class="row"><h2>Pending approvals</h2><span class="hint">Over a cap → a human decides</span></div>
     <div id="approvals" class="ag-theme-quartz grid small"></div>
@@ -50,6 +57,26 @@
     <div class="row"><h2>Spend vs caps</h2><span class="hint" id="spend-day"></span></div>
     <div id="spend" class="ag-theme-quartz grid tiny"></div>
   </section>
+  </div>
+
+  <div id="view-audit" class="view" hidden>
+  <section class="card">
+    <div class="row"><h2>Guardrail audit</h2><span class="hint">Every policy decision · click a row for its quote, rules and payment timeline</span></div>
+    <div class="toolbar">
+      <input id="audit-search" type="search" placeholder="Search all columns (merchant, rule, request id…)" autocomplete="off">
+      <label class="hint"><input id="audit-hide-checks" type="checkbox"> hide read-only checks</label>
+      <span class="legend"><i class="risk-DENY"></i>deny <i class="risk-NEEDS_APPROVAL"></i>needs approval <i class="risk-NEEDS_RECONCILIATION"></i>unconfirmed payment</span>
+      <button id="audit-csv" class="btn" type="button">Export CSV</button>
+    </div>
+    <div class="audit-wrap">
+      <div id="audit" class="ag-theme-quartz grid audit-grid"></div>
+      <aside id="audit-detail" class="detail" hidden>
+        <div class="row"><h3 id="detail-title">Decision</h3><button id="detail-close" class="btn grid-btn" type="button">Close</button></div>
+        <div id="detail-body"></div>
+      </aside>
+    </div>
+  </section>
+  </div>
 </main>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/app.js"></script>

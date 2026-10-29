@@ -38,7 +38,6 @@ SYNONYMS = {
 STOP = {"the", "of", "for", "and", "with", "our", "new", "box", "pack", "bag", "bags", "buy",
         "order", "get", "please", "some", "team", "sandbox", "co", "inch", "2m", "1kg", "x"}
 SPLIT_RE = re.compile(r",|;|\n|\band also\b|\balso\b|\bplus\b|\bas well as\b|\band\b|&", re.I)
-QTY_RE = re.compile(r"(?<![\$\d.])\b(\d{1,3})\b(?!\s*(?:-?\s*inch|%|kg|g\b|m\b|sheets|\.\d))", re.I)
 
 # ---- positive-only grammar (B8) ------------------------------------------------
 # The offline parser accepts ONLY requests built from this grammar; anything else is
@@ -47,11 +46,14 @@ QTY_RE = re.compile(r"(?<![\$\d.])\b(\d{1,3})\b(?!\s*(?:-?\s*inch|%|kg|g\b|m\b|s
 #   request  := clause ( ("," | ";" | "and" | "plus" | "also" | "&" | newline) clause )*
 #   clause   := [filler] [verb] [quantity] item [purpose] [filler]
 #   verb     := buy | get | order | purchase | need | grab   (optionally "i/we need", "me/us")
-#   quantity := non-negative whole number | a | an | one … ten | single | pair | couple | dozen
-#               (optionally "a dozen", "a pair of", …)
+#   quantity := ONE of: non-negative whole number | a | an | one … ten | single | pair |
+#               couple | dozen | a dozen | a pair (of) | a couple (of) | a single
+#               It is read only from the slot immediately before the item; a second
+#               quantity ("two three cables") is ambiguous and refused.
 #   item     := words from the catalog vocabulary (product-name words, synonyms, sizes such
 #               as 27-inch / 4k / 2m / 1kg, prices such as $100, and packaging words)
-#   purpose  := ("for" | "as") up to 8 plain words, none of them a condition/negation word
+#   purpose  := ("for" | "as") up to 8 plain words, none of them a condition/negation word.
+#               It is an inert label: parsed once, never read for quantity or item.
 #   filler   := please
 #
 # There is no denylist for the executed part: an unknown verb ("avoid"), a condition
@@ -66,10 +68,11 @@ GRAMMAR_HELP = (
     "negative or fractional numbers, unknown verbs or words) is refused as a whole.")
 VERBS = {"buy", "get", "order", "purchase", "need", "grab"}
 VERB_FILLERS = {"please", "pls", "kindly", "i", "we", "me", "us"}
-QTY_WORDS = set(NUMBER_WORDS) | {"of"}
+GROUP_WORDS = {"dozen", "pair", "couple", "single"}
 PURPOSE_MARKERS = {"for", "as"}
 # Words that would turn a purpose label into a condition / negation. Only checked in the
-# short free-text purpose tail, which is never executed (it is only a label).
+# short free-text purpose tail. The tail never feeds quantity or item selection (fix
+# round 6); this list only keeps conditional wording out of the transcript label.
 PURPOSE_FORBIDDEN = {
     "if", "unless", "only", "when", "whenever", "until", "after", "before", "once", "provided",
     "approved", "approve", "approval", "not", "no", "never", "dont", "don't", "doesnt", "without",
@@ -124,37 +127,60 @@ class OfflineAgent:
             self._vocab_cache = v - {""}
         return self._vocab_cache
 
-    def validate_clause(self, clause: str) -> str:
-        """Check one clause against the grammar. Returns the item phrase (verb, quantity
-        and purpose removed); raises GrammarError otherwise."""
+    def parse_clause(self, clause: str) -> dict[str, Any]:
+        """Parse ONE clause, once, into its structured parts (fix round 6):
+
+            {"verb": str|None, "quantity": int, "quantity_text": str|None,
+             "item": str, "purpose": str|None}
+
+        The quantity comes ONLY from the slot immediately before the item; the item and
+        the purpose tail are never scanned for numbers, so "for two interns" cannot change
+        what is bought. Raises GrammarError for anything outside the grammar, including an
+        ambiguous quantity such as "two three cables"."""
         toks = [t for t in re.split(r"\s+", clause.strip()) if t]
         low = [t.lower().strip(".!?") for t in toks]
-        i = 0
+        i, verb = 0, None
         while i < len(low) and low[i] in VERB_FILLERS:
             i += 1
         if i < len(low) and low[i] in VERBS:
+            verb = low[i]
             i += 1
             while i < len(low) and low[i] in VERB_FILLERS:
                 i += 1
-        # quantity: digits or number words (e.g. "2", "a", "a dozen", "a pair of")
-        q_start = i
+        # ---- quantity slot: immediately before the item ----
+        q_start, quantity = i, 1
+        nxt = low[i + 1] if i + 1 < len(low) else None
         if i < len(low) and re.fullmatch(r"\d{1,3}", low[i]):
-            i += 1
-        else:
-            while i < len(low) and low[i] in QTY_WORDS and i - q_start < 3:
-                i += 1
-        # item until a purpose marker
+            quantity, i = int(low[i]), i + 1
+        elif i < len(low) and low[i] in ("a", "an") and nxt in GROUP_WORDS:
+            quantity, i = NUMBER_WORDS[nxt], i + 2          # "a dozen", "a pair", "a single"
+        elif i < len(low) and low[i] in ("a", "an"):
+            quantity, i = 1, i + 1
+        elif i < len(low) and low[i] in NUMBER_WORDS:
+            quantity, i = NUMBER_WORDS[low[i]], i + 1      # "two", "zero", "dozen", "pair"
+        if i > q_start and low[i - 1] in GROUP_WORDS - {"single"} and i < len(low) and low[i] == "of":
+            i += 1                                           # "a pair of", "couple of"
+        quantity_text = " ".join(toks[q_start:i]) or None
+        if i < len(low) and (re.fullmatch(r"\d+", low[i]) or low[i] in NUMBER_WORDS):
+            raise GrammarError(f"\"{clause}\": ambiguous quantity \"{' '.join(toks[q_start:i + 1])}\" "
+                               f"(give exactly one quantity before the item)")
+        # ---- item: up to the purpose marker ----
         j = i
         while j < len(low) and low[j] not in PURPOSE_MARKERS:
             j += 1
         item_toks, purpose = low[i:j], low[j + 1:]
+        k = j
         while item_toks and item_toks[-1] == "please":
             item_toks.pop()
+            k -= 1
         if not item_toks:
             raise GrammarError(f"\"{clause}\": no catalog item after the verb/quantity")
         vocab, unknown = self._vocab(), []
         for t in item_toks:
             if PRICE_TOKEN_RE.match(t):
+                continue
+            if t in NUMBER_WORDS and t not in ("a", "an"):
+                unknown.append(t)   # a number word inside the item would be a second quantity
                 continue
             for part in re.split(r"[\-/()]+", t):
                 part = part.strip(".!?'\"")
@@ -167,14 +193,25 @@ class OfflineAgent:
         if unknown:
             raise GrammarError(f"\"{clause}\": unsupported word(s) " +
                                ", ".join(f"\"{u}\"" for u in dict.fromkeys(unknown)))
-        if j < len(low):  # purpose tail
+        purpose_text = None
+        if j < len(low):  # purpose tail: an inert label, validated but never read for quantity/item
             words = [w for w in purpose if w != "please"]
             bad = [w for w in words if not re.fullmatch(r"[a-z']+", w) or w.replace("’", "'") in PURPOSE_FORBIDDEN]
             if not words or len(words) > 8 or bad:
                 raise GrammarError(f"\"{clause}\": the \"{low[j]} …\" part must be a short plain purpose "
                                    f"(no conditions, negation or numbers)" +
                                    (f"; not allowed: {', '.join(bad)}" if bad else ""))
-        return " ".join(toks[i:j])
+            purpose_text = " ".join(toks[j:])
+        return {"verb": verb, "quantity": min(quantity, 999), "quantity_text": quantity_text,
+                "item": " ".join(toks[i:k]), "purpose": purpose_text}
+
+    def validate_clause(self, clause: str) -> str:
+        """Backwards-compatible: the item phrase of a grammatical clause (GrammarError otherwise)."""
+        return self.parse_clause(clause)["item"]
+
+    @staticmethod
+    def _clauses(request: str) -> list[str]:
+        return [c for c in (c.strip(" .!?") for c in SPLIT_RE.split(request)) if c]
 
     def validate(self, request: str) -> None:
         """Raise GrammarError unless every clause of the request is in the grammar."""
@@ -184,30 +221,27 @@ class OfflineAgent:
         if re.search(r"[^\w\s,;.!?&$'’\-/()\n]", request):
             ch = re.search(r"[^\w\s,;.!?&$'’\-/()\n]", request).group(0)
             raise GrammarError(f"unsupported character \"{ch}\"")
-        clauses = [c.strip(" .!?") for c in SPLIT_RE.split(request)]
-        clauses = [c for c in clauses if c]
+        clauses = self._clauses(request)
         if not clauses:
             raise GrammarError("empty request")
         for c in clauses:
-            self.validate_clause(c)
+            self.parse_clause(c)
 
     def parse(self, request: str) -> list[dict[str, Any]]:
-        """Split a (grammar-checked) request into (product_id, quantity, clause) lines.
-        Clauses whose item words match no product get product_id None."""
+        """Split a request into structured lines {product_id, quantity, clause, verb, item,
+        purpose}. The executed fields (product_id, quantity) come only from the parsed
+        quantity slot and item phrase. A clause outside the grammar (or matching no
+        product) gets product_id None and quantity 0, i.e. is never executed."""
         lines = []
-        for clause in SPLIT_RE.split(request):
-            clause = clause.strip(" .!?")
-            if not clause:
-                continue
+        for clause in self._clauses(request):
             try:
-                item = self.validate_clause(clause)
-            except GrammarError:
-                item = clause
-            pid = self._match(item)
-            if pid is None:
-                lines.append({"product_id": None, "quantity": 0, "clause": clause})
+                parsed = self.parse_clause(clause)
+            except GrammarError as e:
+                lines.append({"product_id": None, "quantity": 0, "clause": clause, "error": str(e)})
                 continue
-            lines.append({"product_id": pid, "quantity": self._quantity(clause), "clause": clause})
+            pid = self._match(parsed["item"])
+            lines.append({**parsed, "clause": clause, "product_id": pid,
+                          "quantity": parsed["quantity"] if pid else 0})
         return lines
 
     def _match(self, clause: str) -> str | None:
@@ -228,16 +262,6 @@ class OfflineAgent:
                                       and price < float(self.service.catalog.get(best)["price"])):
                 best, best_score = pid, score
         return best
-
-    @staticmethod
-    def _quantity(clause: str) -> int:
-        m = QTY_RE.search(clause)
-        if m:
-            return min(int(m.group(1)), 999)  # 0 is kept as 0 and refused in run()
-        for w in re.findall(r"[a-z]+", clause.lower()):
-            if w in NUMBER_WORDS and w not in ("a", "an"):
-                return NUMBER_WORDS[w]
-        return 1
 
     # ---- run -----------------------------------------------------------
     def _tool(self, res: AgentResult, name: str, args: dict[str, Any]) -> dict[str, Any]:

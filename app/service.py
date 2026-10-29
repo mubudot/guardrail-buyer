@@ -42,7 +42,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .guardrails import (Decision, OrderRequest, Policy, SpendLedger, Verdict,
-                         evaluate, hard_rules_only, money)
+                         evaluate, explain_rules, hard_rules_only, money)
 from .paypal_client import MockPayPal, PayPalClient, PayPalError
 
 
@@ -118,6 +118,31 @@ class Store:
         for col in ("op_gen", "capture_unknown"):
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE orders ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+        if "capture_unknown" not in cols:
+            # fix round 6 (CODEX_REVIEW_3 #1): a DB written by a version without this flag
+            # cannot tell whether an unresolved order ever had an ambiguous capture. Be
+            # conservative: every legacy order whose payment outcome is open (or that was
+            # mid-capture) is treated as "a capture may have happened", so it can never be
+            # moved back to PAYER_ACTION_REQUIRED, cancelled or expired, only resolved from
+            # the provider (COMPLETED / declined / VOIDED).
+            self.conn.execute("UPDATE orders SET capture_unknown=1 "
+                              "WHERE status IN ('NEEDS_RECONCILIATION', 'CAPTURING')")
+        # fix round 6: guardrail decision audit log + order status timeline
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS decisions (
+                id TEXT PRIMARY KEY, created_at TEXT, stage TEXT, request_id TEXT,
+                product_id TEXT, product_name TEXT, merchant TEXT, category TEXT,
+                quantity INTEGER, amount TEXT, currency TEXT, verdict TEXT, outcome TEXT,
+                rule_hit TEXT, reasons TEXT, rules TEXT, spent_before TEXT,
+                order_id TEXT, approval_id TEXT);
+            CREATE INDEX IF NOT EXISTS decisions_created ON decisions(created_at);
+            CREATE INDEX IF NOT EXISTS decisions_order ON decisions(order_id);
+            CREATE TABLE IF NOT EXISTS order_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT, at TEXT,
+                from_status TEXT, to_status TEXT, op_gen INTEGER, note TEXT);
+            CREATE INDEX IF NOT EXISTS order_events_order ON order_events(order_id);
+            """)
         self.conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS orders_paypal ON orders(paypal_order_id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS orders_req ON orders(request_id, product_id)")
@@ -167,7 +192,7 @@ class Store:
 
     @staticmethod
     def _decode(d: dict[str, Any]) -> dict[str, Any]:
-        for k in ("reasons", "decision"):
+        for k in ("reasons", "decision", "rules"):
             if isinstance(d.get(k), str):
                 d[k] = json.loads(d[k])
         return d
@@ -261,7 +286,10 @@ class BuyerService:
     # ---- read-only check ----------------------------------------------
     def check(self, product_id: str, quantity: int = 1, request_id: str | None = None) -> dict[str, Any]:
         p, req = self._line(product_id, quantity)
-        d = self._evaluate(p, req, request_id)
+        spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
+        d = evaluate(self.policy, req, spent, prior)
+        self._log_decision("check", p, quantity, req, d, d.verdict.value,
+                           explain_rules(self.policy, req, spent, prior), spent, request_id=request_id)
         return {"product_id": product_id, "product_name": p["name"], "quantity": quantity,
                 "amount": str(req.amount), "currency": req.currency,
                 "spent_today": str(self.spent_today()), **d.to_dict()}
@@ -283,13 +311,42 @@ class BuyerService:
         if extra_where:
             where += f" AND ({extra_where})"
         with self.store.tx() as c:
+            prev = c.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()
             cur = c.execute(f"UPDATE orders SET {','.join(f'{k}=?' for k in sets)}, op_gen=op_gen+1 "
                             f"WHERE {where}", [*sets.values(), *args])
             if cur.rowcount != 1:
                 return None
             if release:
                 c.execute("DELETE FROM spend WHERE order_ref=?", (oid,))
-            return int(c.execute("SELECT op_gen FROM orders WHERE id=?", (oid,)).fetchone()[0])
+            g = int(c.execute("SELECT op_gen FROM orders WHERE id=?", (oid,)).fetchone()[0])
+            self._event(c, oid, prev[0] if prev else None, to, g,
+                        fields.get("paypal_status") or ("reservation released" if release else None))
+            return g
+
+    def _event(self, c, oid: str, frm: str | None, to: str, gen: int, note: str | None = None) -> None:
+        """Append one order status transition to the payment timeline (same transaction)."""
+        c.execute("INSERT INTO order_events (order_id, at, from_status, to_status, op_gen, note) "
+                  "VALUES (?,?,?,?,?,?)", (oid, self._ts(), frm, to, gen, (note or "")[:200] or None))
+
+    def _log_decision(self, stage: str, p: dict[str, Any], quantity: int, req: OrderRequest,
+                      d: Decision, outcome: str, rules: list[dict[str, Any]], spent_before: Any,
+                      request_id: str | None = None, order_id: str | None = None,
+                      approval_id: str | None = None) -> str:
+        """Persist one guardrail decision (audit log). Joins the caller's transaction if any."""
+        did = "DEC-" + uuid.uuid4().hex[:10].upper()
+        hit = [r["rule"] for r in rules if r["outcome"] in ("DENY", "NEEDS_APPROVAL")]
+        with self.store.tx():
+            self.store.insert("decisions", {
+                "id": did, "created_at": self._ts(), "stage": stage, "request_id": request_id,
+                "product_id": p["id"], "product_name": p["name"], "merchant": p["merchant"],
+                "category": p["category"], "quantity": int(quantity), "amount": str(req.amount),
+                "currency": req.currency, "verdict": d.verdict.value, "outcome": outcome,
+                "rule_hit": ", ".join(hit) or ("human_approval" if stage == "approval_execute"
+                                               and d.verdict == Verdict.ALLOW else "none"),
+                "reasons": json.dumps(list(d.reasons)), "rules": json.dumps(rules),
+                "spent_before": str(money(spent_before)), "order_id": order_id,
+                "approval_id": approval_id})
+        return did
 
     def _superseded(self, oid: str, note: str = "") -> dict[str, Any]:
         """A result that arrived for an older generation of the order: not applied."""
@@ -310,6 +367,7 @@ class BuyerService:
             "approve_url": None, "updated_at": now, "request_id": request_id,
             "op_gen": 1, "capture_unknown": 0})
         self.ledger.record(self._today(), req.amount, req.currency, oid)
+        self._event(self.store.conn, oid, None, "CREATING", 1, f"reserved {req.amount} {req.currency}")
         return oid
 
     # ---- signed cancel state (B3) ----------------------------------------
@@ -606,6 +664,9 @@ class BuyerService:
                                 (self._ts(), oid))
                 if cur.rowcount == 1:
                     c.execute("DELETE FROM spend WHERE order_ref=?", (oid,))
+                    g = int(c.execute("SELECT op_gen FROM orders WHERE id=?", (oid,)).fetchone()[0])
+                    self._event(c, oid, "PAYER_ACTION_REQUIRED", "EXPIRED", g,
+                                "buyer did not approve in time; reservation released")
                     expired.append(oid)
         return expired
 
@@ -664,6 +725,77 @@ class BuyerService:
                         lost.append(o["id"])
         return lost
 
+    # ---- audit (fix round 6) ----------------------------------------------
+    _DECISIONS_Q = ("SELECT d.*, COALESCE(o.status, ao.status) AS order_status, "
+                    "COALESCE(d.order_id, a.order_id) AS linked_order_id, a.status AS approval_status "
+                    "FROM decisions d LEFT JOIN approvals a ON a.id=d.approval_id "
+                    "LEFT JOIN orders o ON o.id=d.order_id LEFT JOIN orders ao ON ao.id=a.order_id ")
+
+    def list_decisions(self, limit: int = 1000, decision_id: str | None = None) -> list[dict[str, Any]]:
+        """Every guardrail decision, newest first, with the current status of the order /
+        approval it led to (so the audit grid can highlight NEEDS_RECONCILIATION)."""
+        self.expire_stale()
+        limit = max(1, min(int(limit), 5000))
+        where, args = ("WHERE d.id=? ", [decision_id]) if decision_id else ("", [])
+        with self.store.lock:
+            rows = self.store.conn.execute(
+                self._DECISIONS_Q + where + "ORDER BY d.created_at DESC, d.rowid DESC LIMIT ?",
+                [*args, limit]).fetchall()
+        out = []
+        for r in rows:
+            d = self.store._decode(dict(r))
+            d["risk"] = self._risk(d)
+            out.append(d)
+        return out
+
+    @staticmethod
+    def _risk(d: dict[str, Any]) -> str:
+        """The single highlight class of an audit row (most severe first)."""
+        if d.get("order_status") == "NEEDS_RECONCILIATION":
+            return "NEEDS_RECONCILIATION"
+        if d.get("verdict") == "DENY":
+            return "DENY"
+        if d.get("verdict") == "NEEDS_APPROVAL":
+            return "NEEDS_APPROVAL"
+        return "ALLOW"
+
+    def order_timeline(self, oid: str) -> list[dict[str, Any]]:
+        with self.store.lock:
+            rows = self.store.conn.execute(
+                "SELECT at, from_status, to_status, op_gen, note FROM order_events WHERE order_id=? "
+                "ORDER BY id", (oid,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def decision_detail(self, did: str) -> dict[str, Any]:
+        """One decision with its quote, every rule evaluated, the approval it raised or
+        executed, and the payment timeline (order status transitions) of its order."""
+        rows = self.list_decisions(1, decision_id=did)
+        if not rows:
+            raise KeyError(did)
+        d = rows[0]
+        quote = self._quote(d["product_id"], d["quantity"], d["amount"], d["currency"],
+                            d["merchant"], d["category"])
+        approval = self.store.get("approvals", d["approval_id"]) if d.get("approval_id") else None
+        oid = d.get("linked_order_id")
+        order = self.store.get("orders", oid) if oid else None
+        timeline = self.order_timeline(oid) if oid else []
+        if order and not timeline:  # order written by a version without the timeline table
+            timeline = [{"at": order["created_at"], "from_status": None, "to_status": "CREATING",
+                         "op_gen": None, "note": "legacy order: only creation and current status known"}]
+            if order["status"] != "CREATING":
+                timeline.append({"at": order.get("updated_at"), "from_status": None,
+                                 "to_status": order["status"], "op_gen": order.get("op_gen"),
+                                 "note": order.get("paypal_status")})
+        related = []
+        if d.get("request_id"):
+            with self.store.lock:
+                related = [dict(r) for r in self.store.conn.execute(
+                    "SELECT id, created_at, stage, verdict, outcome, rule_hit FROM decisions "
+                    "WHERE request_id=? AND product_id=? ORDER BY created_at, rowid",
+                    (d["request_id"], d["product_id"])).fetchall()]
+        return {"decision": d, "quote": quote, "rules": d.get("rules") or [], "approval": approval,
+                "order": order, "timeline": timeline, "related_decisions": related}
+
     def spend_summary(self) -> dict[str, Any]:
         """Today's spend split into captured vs reserved, against the caps."""
         self.expire_stale()
@@ -703,31 +835,43 @@ class BuyerService:
     def place_order(self, product_id: str, quantity: int = 1, request_id: str | None = None) -> dict[str, Any]:
         p, req = self._line(product_id, quantity)
         with self.store.tx():  # check + reserve atomically, before any PayPal I/O (B1)
-            d = self._evaluate(p, req, request_id)
+            spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
+            d = evaluate(self.policy, req, spent, prior)
+            rules = explain_rules(self.policy, req, spent, prior)
             if d.verdict == Verdict.DENY:
+                self._log_decision("order", p, quantity, req, d, "DENIED", rules, spent, request_id)
                 return {"result": "DENIED", **d.to_dict()}
             if d.verdict == Verdict.NEEDS_APPROVAL:
+                self._log_decision("order", p, quantity, req, d, "NEEDS_APPROVAL", rules, spent, request_id)
                 return {"result": "NEEDS_APPROVAL", **d.to_dict(),
                         "next_step": "call request_approval with a justification; a human must approve"}
             oid = self._reserve(p, req, quantity, d, request_id=request_id)
+            self._log_decision("order", p, quantity, req, d, "RESERVED", rules, spent, request_id, order_id=oid)
         order = self._create_at_provider(oid)
         return {"result": self._result(order), "order": order, **d.to_dict()}
 
     def request_approval(self, product_id: str, quantity: int, justification: str,
                          request_id: str | None = None) -> dict[str, Any]:
         p, req = self._line(product_id, quantity)
-        d = self._evaluate(p, req, request_id)
+        spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
+        d = evaluate(self.policy, req, spent, prior)
+        rules = explain_rules(self.policy, req, spent, prior)
         if d.verdict == Verdict.DENY:
+            self._log_decision("approval_request", p, quantity, req, d, "DENIED", rules, spent, request_id)
             return {"result": "DENIED", **d.to_dict(), "note": "denied orders cannot be escalated"}
         if d.verdict == Verdict.ALLOW:
+            self._log_decision("approval_request", p, quantity, req, d, "NOT_NEEDED", rules, spent, request_id)
             return {"result": "NOT_NEEDED", **d.to_dict(), "note": "within policy; use create_order"}
         aid = "APR-" + uuid.uuid4().hex[:8].upper()
-        self.store.insert("approvals", {
-            "id": aid, "product_id": p["id"], "product_name": p["name"], "merchant": p["merchant"],
-            "category": p["category"], "quantity": quantity, "amount": str(req.amount),
-            "currency": req.currency, "justification": justification[:500],
-            "reasons": json.dumps(list(d.reasons)), "status": "PENDING", "order_id": None,
-            "created_at": self._ts(), "decided_at": None, "request_id": request_id})
+        with self.store.tx():
+            self.store.insert("approvals", {
+                "id": aid, "product_id": p["id"], "product_name": p["name"], "merchant": p["merchant"],
+                "category": p["category"], "quantity": quantity, "amount": str(req.amount),
+                "currency": req.currency, "justification": justification[:500],
+                "reasons": json.dumps(list(d.reasons)), "status": "PENDING", "order_id": None,
+                "created_at": self._ts(), "decided_at": None, "request_id": request_id})
+            self._log_decision("approval_request", p, quantity, req, d, "APPROVAL_REQUESTED", rules, spent,
+                               request_id, approval_id=aid)
         return {"result": "APPROVAL_REQUESTED", "approval_id": aid, **d.to_dict()}
 
     def approve(self, approval_id: str) -> dict[str, Any]:
@@ -764,9 +908,13 @@ class BuyerService:
             # transaction. Human approval waives only the soft caps.
             prior = self._related_prior(a.get("request_id"), p["id"], p["merchant"])
             d = hard_rules_only(self.policy, req, prior)
+            spent = self.spent_today()
+            rules = explain_rules(self.policy, req, spent, prior, soft_waived=True)
             if d.verdict == Verdict.DENY:
                 c.execute("UPDATE approvals SET status='DENIED_BY_POLICY', decided_at=? WHERE id=? AND status='PENDING'",
                           (self._ts(), approval_id))
+                self._log_decision("approval_execute", p, int(a["quantity"]), req, d, "DENIED", rules, spent,
+                                   a.get("request_id"), approval_id=approval_id)
                 return {"result": "DENIED", **d.to_dict()}
             claim = c.execute("UPDATE approvals SET status='EXECUTING', decided_at=? WHERE id=? AND status='PENDING'",
                               (self._ts(), approval_id))
@@ -775,6 +923,8 @@ class BuyerService:
             oid = self._reserve(p, req, int(a["quantity"]), d, approval_id=approval_id,
                                 request_id=a.get("request_id"))
             c.execute("UPDATE approvals SET order_id=? WHERE id=?", (oid, approval_id))
+            self._log_decision("approval_execute", p, int(a["quantity"]), req, d, "RESERVED", rules, spent,
+                               a.get("request_id"), order_id=oid, approval_id=approval_id)
         order = self._create_at_provider(oid)
         with self.store.tx() as c:
             c.execute("UPDATE approvals SET status='APPROVED' WHERE id=? AND status='EXECUTING'", (approval_id,))

@@ -12,3 +12,4 @@ build/
 docs/demo_draft.mp4
 *.db-wal
 *.db-shm
+*.mock.lock

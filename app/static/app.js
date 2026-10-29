@@ -56,6 +56,7 @@ const approvalsGrid = agGrid.createGrid($("approvals"), {
     {headerName: "Decision", minWidth: 175, maxWidth: 180, cellRenderer: approvalButtons, sortable: false},
   ],
   rowData: [], overlayNoRowsTemplate: "Nothing waiting for you", domLayout: "autoHeight",
+  getRowId: (p) => p.data.id,
   rowHeight: 44, tooltipShowDelay: 200, autoSizeStrategy: {type: "fitGridWidth"},
   defaultColDef: {resizable: true, sortable: true},
 });
@@ -84,6 +85,7 @@ const ordersGrid = agGrid.createGrid($("orders"), {
     {headerName: "Payment / capture", minWidth: 160, cellRenderer: payCell, sortable: false},
   ],
   rowData: [], overlayNoRowsTemplate: "No orders yet: ask the agent above",
+  getRowId: (p) => p.data.id,
   rowHeight: 44, autoSizeStrategy: {type: "fitGridWidth"},
   defaultColDef: {resizable: true, sortable: true},
 });
@@ -101,11 +103,115 @@ const spendGrid = agGrid.createGrid($("spend"), {
   defaultColDef: {resizable: true},
 });
 
+
+/* ---------- audit: every guardrail decision (AG Grid Community features only) ---------- */
+const STAGE = {check: "policy check", order: "create order", approval_request: "approval request",
+               approval_execute: "approval executed"};
+const RISK_RULES = {
+  "risk-DENY": (p) => p.data && p.data.risk === "DENY",
+  "risk-NEEDS_APPROVAL": (p) => p.data && p.data.risk === "NEEDS_APPROVAL",
+  "risk-NEEDS_RECONCILIATION": (p) => p.data && p.data.risk === "NEEDS_RECONCILIATION",
+};
+const auditGrid = agGrid.createGrid($("audit"), {
+  columnDefs: [
+    {field: "created_at", headerName: "Timestamp", width: 170, sort: "desc", filter: "agDateColumnFilter",
+      valueFormatter: (p) => p.value ? new Date(p.value).toLocaleString() : "",
+      filterParams: {comparator: (day, v) => { const d = new Date(v); d.setHours(0, 0, 0, 0);
+        return d < day ? -1 : d > day ? 1 : 0; }}},
+    {field: "verdict", headerName: "Decision", width: 140, filter: "agTextColumnFilter",
+      valueFormatter: (p) => ({ALLOW: "allow", NEEDS_APPROVAL: "approval", DENY: "deny"})[p.value] || p.value,
+      cellClassRules: {"risk-DENY": (p) => p.value === "DENY", "risk-NEEDS_APPROVAL": (p) => p.value === "NEEDS_APPROVAL"}},
+    {field: "rule_hit", headerName: "Rule hit", width: 190, filter: "agTextColumnFilter", tooltipValueGetter:
+      (p) => (p.data.reasons || []).join("\n")},
+    {field: "amount", headerName: "Amount", width: 110, filter: "agNumberColumnFilter",
+      valueGetter: (p) => p.data ? Number(p.data.amount) : null, valueFormatter: (p) => usd(p.value)},
+    {field: "merchant", headerName: "Merchant", width: 180, filter: "agTextColumnFilter"},
+    {field: "product_name", headerName: "Item", flex: 1, minWidth: 160, filter: "agTextColumnFilter",
+      valueGetter: (p) => p.data ? `${p.data.quantity} × ${p.data.product_name}` : ""},
+    {field: "stage", headerName: "Stage", width: 150, filter: "agTextColumnFilter",
+      valueFormatter: (p) => STAGE[p.value] || p.value},
+    {field: "outcome", headerName: "Outcome", width: 160, filter: "agTextColumnFilter", cellRenderer: statusCell},
+    {field: "order_status", headerName: "Payment status", width: 165, filter: "agTextColumnFilter",
+      cellRenderer: statusCell, cellClassRules: {"risk-NEEDS_RECONCILIATION": (p) => p.value === "NEEDS_RECONCILIATION"}},
+    {field: "request_id", headerName: "Request id", width: 160, filter: "agTextColumnFilter"},
+    {field: "id", headerName: "Decision id", width: 150, filter: "agTextColumnFilter", hide: false},
+  ],
+  rowData: [], getRowId: (p) => p.data.id, rowClassRules: RISK_RULES,
+  defaultColDef: {resizable: true, sortable: true, floatingFilter: true},
+  rowSelection: {mode: "singleRow", checkboxes: false, enableClickSelection: true},
+  tooltipShowDelay: 200, rowHeight: 38, overlayNoRowsTemplate: "No guardrail decisions yet",
+  isExternalFilterPresent: () => $("audit-hide-checks").checked,
+  doesExternalFilterPass: (node) => node.data.stage !== "check",
+  onRowClicked: (e) => showDecision(e.data.id),
+});
+$("audit-search").addEventListener("input", (e) => auditGrid.setGridOption("quickFilterText", e.target.value));
+$("audit-hide-checks").addEventListener("change", () => auditGrid.onFilterChanged());
+$("audit-csv").addEventListener("click", () => auditGrid.exportDataAsCsv({
+  fileName: `guardrail-audit-${new Date().toISOString().slice(0, 10)}.csv`,
+  processCellCallback: (p) => p.column.getColId() === "created_at" ? p.value : (p.formatValue ? p.formatValue(p.value) : p.value),
+}));
+$("detail-close").addEventListener("click", () => { $("audit-detail").hidden = true; auditGrid.deselectAll(); });
+
+function el(tag, attrs = {}, ...kids) {  // DOM builder: data is always set as text, never as HTML
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
+  for (const k of kids) e.append(k instanceof Node ? k : document.createTextNode(k == null ? "" : String(k)));
+  return e;
+}
+const kv = (rows) => el("table", {}, ...rows.filter((r) => r[1] != null && r[1] !== "")
+  .map(([k, v]) => el("tr", {}, el("td", {}, k), el("td", {}, v))));
+
+async function showDecision(id) {
+  const box = $("audit-detail"), body = $("detail-body");
+  box.hidden = false; body.textContent = "Loading…"; $("detail-title").textContent = id;
+  let d;
+  try { d = await api(`/decisions/${encodeURIComponent(id)}`); }
+  catch (e) { body.textContent = "Could not load: " + e.message; return; }
+  const dec = d.decision, q = d.quote;
+  body.textContent = "";
+  body.append(el("h4", {}, "Decision"), kv([
+    ["Verdict", dec.verdict], ["Stage", STAGE[dec.stage] || dec.stage], ["Outcome", dec.outcome],
+    ["Rule hit", dec.rule_hit], ["When", new Date(dec.created_at).toLocaleString()],
+    ["Request id", dec.request_id], ["Spent before", usd(dec.spent_before)],
+    ["Reasons", (dec.reasons || []).join("; ")]]));
+  body.append(el("h4", {}, "Quote"), kv([
+    ["Product", `${q.product_id} · ${dec.product_name}`], ["Quantity", q.quantity],
+    ["Amount", `${usd(q.amount)} ${q.currency}`], ["Merchant", q.merchant], ["Category", q.category]]));
+  body.append(el("h4", {}, "Rules evaluated"), el("table", {}, ...(d.rules || []).map((r) =>
+    el("tr", {}, el("td", {}, r.rule), el("td", {}, el("span", {class: `rule-${r.outcome}`}, r.outcome), " ", el("span", {class: "note"}, r.detail))))));
+  if (d.approval) body.append(el("h4", {}, "Approval"), kv([
+    ["Approval", d.approval.id], ["Status", d.approval.status], ["Justification", d.approval.justification],
+    ["Decided", d.approval.decided_at ? new Date(d.approval.decided_at).toLocaleString() : "pending"]]));
+  body.append(el("h4", {}, "Payment timeline"));
+  if (!d.order) body.append(el("p", {class: "note"}, "No order was created by this decision."));
+  else {
+    body.append(kv([["Order", d.order.id], ["Current status", d.order.status],
+                    ["PayPal order", d.order.paypal_order_id], ["Capture", d.order.capture_id]]));
+    body.append(el("ol", {}, ...d.timeline.map((t) => el("li", {},
+      el("span", {class: `st ${t.to_status}`}, (t.from_status ? `${t.from_status} → ` : "") + t.to_status),
+      el("div", {class: "note"}, `${t.at ? new Date(t.at).toLocaleString() : ""}${t.note ? " · " + t.note : ""}`)))));
+  }
+}
+
+/* ---------- tabs ---------- */
+for (const tab of document.querySelectorAll(".tab")) {
+  tab.addEventListener("click", () => {
+    for (const t of document.querySelectorAll(".tab")) {
+      const on = t === tab; t.classList.toggle("active", on); t.setAttribute("aria-selected", on);
+      $(t.dataset.view).hidden = !on;
+    }
+    if (tab.id === "tab-audit") refresh();
+  });
+}
+
 function kpi(k, v, extra = "") { return `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div>${extra}</div>`; }
 
 async function refresh() {
   try {
-    const [orders, approvals, spend] = await Promise.all([api("/orders"), api("/approvals"), api("/spend")]);
+    const [orders, approvals, spend, decisions] = await Promise.all([api("/orders"), api("/approvals"), api("/spend"),
+                                                                     api("/decisions")]);
+    auditGrid.setGridOption("rowData", decisions);  // getRowId -> delta update, selection kept
+    $("audit-count").textContent = `(${decisions.length})`;
     ordersGrid.setGridOption("rowData", orders);
     approvalsGrid.setGridOption("rowData", approvals.filter((a) => a.status === "PENDING"));
     spendGrid.setGridOption("rowData", [

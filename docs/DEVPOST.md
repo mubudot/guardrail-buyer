@@ -38,7 +38,9 @@ policy engine on the server** before it reaches PayPal:
 
 The AG Grid dashboard shows pending approvals (with the agent's justification and the exact rule hit),
 every order with its PayPal status and a **Pay with PayPal** button, and spend vs. caps (captured,
-reserved, headroom).
+reserved, headroom). The **Audit** tab lists every guardrail decision (allow / approval / deny, the rule
+hit, amount, merchant, request id) so a finance lead can filter, search and export them to CSV, and
+click any row to see the quote, each rule evaluated and the payment timeline.
 
 ## How we built it
 
@@ -58,11 +60,13 @@ reserved, headroom).
 - **AI:** Claude (`claude-sonnet-5-5`) through the Anthropic Messages API with four tools:
   `search_catalog`, `check_policy`, `create_order`, `request_approval`. The model never sees PayPal
   credentials.
-- **Dashboard:** plain HTML/JS with **AG Grid Community** (approvals grid with action buttons, orders
-  grid with PayPal links, spend-vs-caps grid).
+- **Dashboard:** plain HTML/JS with **AG Grid Community** 32.3.3, vendored (approvals grid with action
+  buttons, orders grid with PayPal links, spend-vs-caps grid, and an **Audit** grid of every guardrail
+  decision: column filters, quick search, risk highlighting, CSV export, and a detail panel with the
+  quote, every rule evaluated and the payment's status timeline).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 148 pytest tests (guardrails, payment flow, reservations/expiry, API, agent loop with a
+- **Tests:** 196 pytest tests (guardrails, payment flow, reservations/expiry, API, agent loop with a
   scripted fake LLM, offline mode, and thread/barrier concurrency tests for budget races, double
   approvals and cancel-vs-capture) plus a live Sandbox smoke script.
 
@@ -147,7 +151,7 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 148 passed, no network
+python -m pytest -q                      # 196 passed, no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card

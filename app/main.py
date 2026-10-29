@@ -5,6 +5,7 @@ import hmac
 import html
 import logging
 import os
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -44,19 +45,35 @@ def build_service(db_path: str | None = None, paypal_mode: str | None = None) ->
                         db_path or os.environ.get("DB_PATH", str(ROOT / "guardrail.db")))
 
 
+class ConfigError(ValueError):
+    """Invalid startup configuration (fails fast instead of crashing requests later)."""
+
+
 def parse_rate_limit(value: str | None) -> tuple[int, float] | None:
-    """"N/SECONDS" (e.g. "20/60") -> (N, SECONDS); "0" or "off" disables."""
-    value = (value if value is not None else "20/60").strip().lower()
-    if value in ("", "0", "off", "none"):
+    """"N/SECONDS" (e.g. "20/60") -> (N, SECONDS); "N" alone means per 60 s; "off"
+    (or "none", or a bare "0") disables. N and SECONDS must be positive whole numbers;
+    anything else raises ConfigError at startup (fix round 6, CODEX_REVIEW_3 #4)."""
+    raw = value if value is not None else "20/60"
+    v = raw.strip().lower()
+    if v in ("off", "none", "0"):
         return None
-    n, _, per = value.partition("/")
-    return int(n), float(per or 60)
+    n, sep, per = v.partition("/")
+    n, per = n.strip(), per.strip()
+    if not re.fullmatch(r"[0-9]{1,9}", n) or (sep and not re.fullmatch(r"[0-9]{1,9}", per)) \
+            or int(n) < 1 or (sep and int(per) < 1):
+        raise ConfigError(f"AGENT_RATE_LIMIT={raw!r} is invalid: use N/SECONDS with positive whole "
+                          f"numbers (e.g. 20/60), or 'off' to disable")
+    return int(n), float(int(per) if sep else 60)
 
 
 class RateLimiter:
     """In-memory sliding-window limit per client IP (one process only; local-demo scope)."""
 
     def __init__(self, limit: int, per_seconds: float, clock=time.monotonic):
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 \
+                or not (isinstance(per_seconds, (int, float)) and 0 < per_seconds < float("inf")):
+            raise ConfigError(f"rate limit must be a positive whole number per a positive finite "
+                              f"window, got {limit!r}/{per_seconds!r}")
         self.limit, self.per, self.clock = limit, per_seconds, clock
         self.hits: dict[str, deque] = defaultdict(deque)
         self.lock = threading.Lock()
@@ -77,8 +94,11 @@ class RateLimiter:
 def create_app(service: BuyerService | None = None, agent: PurchasingAgent | None = None,
                approver_token: str | None = None, demo_mode: bool | None = None,
                agent_rate_limit: tuple[int, float] | None | str = "env") -> FastAPI:
-    app = FastAPI(title="GuardRail Buyer", version="0.3.0",
+    app = FastAPI(title="GuardRail Buyer", version="0.4.0",
                   description="AI purchasing agent with PayPal spend guardrails (Sandbox)")
+    # validate configuration before touching the database (fail fast at startup)
+    limit = parse_rate_limit(os.environ.get("AGENT_RATE_LIMIT")) if agent_rate_limit == "env" else agent_rate_limit
+    limiter = RateLimiter(*limit) if limit else None
     svc = service or build_service()
     app.state.service = svc
     # Mock mode is single-process (N3): take the exclusive DB lock first (fails fast if
@@ -96,8 +116,6 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
             log.warning("APPROVER_TOKEN not set: approve/reject/cancel are REFUSED (503). "
                         "Set APPROVER_TOKEN, or DEMO_MODE=1 for an open local demo.")
     approver_mode = "token" if token else ("open-demo" if demo else "disabled")
-    limit = parse_rate_limit(os.environ.get("AGENT_RATE_LIMIT")) if agent_rate_limit == "env" else agent_rate_limit
-    limiter = RateLimiter(*limit) if limit else None
 
     def rate_limited(request: Request):
         if limiter is None:
@@ -163,6 +181,22 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     @app.get("/approvals")
     def list_approvals(status: str | None = None):
         return svc.store.list("approvals", status)
+
+    @app.get("/decisions")
+    def list_decisions(limit: int = 1000):
+        """Audit log: every guardrail decision (check / order / approval request / approval
+        execution) with verdict, rule hit, quote, request id, and the current status of the
+        order or approval it led to. Newest first."""
+        return svc.list_decisions(limit)
+
+    @app.get("/decisions/{decision_id}")
+    def get_decision(decision_id: str):
+        """One decision: quote, every rule evaluated, approval, and the order's payment
+        timeline (status transitions)."""
+        try:
+            return svc.decision_detail(decision_id)
+        except KeyError:
+            raise HTTPException(404, "unknown decision")
 
     def _decide(approval_id: str, fn):
         try:
@@ -303,5 +337,5 @@ app = None
 if os.environ.get("GRB_NO_AUTOAPP") != "1":
     try:
         app = create_app()
-    except MockLockError as e:  # second mock-mode process on the same DB: fail fast
+    except (MockLockError, ConfigError) as e:  # second mock process on the DB / bad config: fail fast
         raise SystemExit(f"ERROR: {e}") from None

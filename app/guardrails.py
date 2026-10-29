@@ -158,6 +158,50 @@ def evaluate(policy: Policy, order: OrderRequest, spent_today: Decimal = Decimal
     return Decision(Verdict.ALLOW, (f"within caps: {amount} <= {policy.per_order_cap}, today {spent + amount} <= {policy.daily_cap}",))
 
 
+def explain_rules(policy: Policy, order: OrderRequest, spent_today: Decimal = Decimal("0"),
+                  related_prior: Decimal = Decimal("0"), soft_waived: bool = False) -> list[dict[str, Any]]:
+    """Every rule `evaluate()` applies, one row each, for the audit view:
+    {"rule", "outcome": PASS | DENY | NEEDS_APPROVAL | WAIVED | SKIPPED, "detail"}.
+    Mirrors `evaluate()` (a test asserts the verdicts agree). `soft_waived` marks the
+    soft caps as waived by a human approval (`hard_rules_only`)."""
+    amount, spent, prior = money(order.amount), money(spent_today), money(related_prior)
+    purchase = amount + prior
+    merchant, category = order.merchant.strip().lower(), order.category.strip().lower()
+    cur = policy.currency
+    rows: list[dict[str, Any]] = []
+
+    def add(rule: str, failed: bool, fail_outcome: str, detail: str) -> None:
+        rows.append({"rule": rule, "outcome": fail_outcome if failed else "PASS", "detail": detail})
+
+    add("currency", order.currency.upper() != cur, "DENY", f"{order.currency.upper()} vs policy {cur}")
+    add("positive_amount", amount <= 0, "DENY", f"amount {amount}")
+    add("merchant_blocklist", merchant in policy.blocked_merchants, "DENY", f"merchant '{order.merchant}'")
+    if merchant in policy.blocked_merchants:
+        rows.append({"rule": "merchant_allowlist", "outcome": "SKIPPED", "detail": "merchant already blocked"})
+    else:
+        add("merchant_allowlist", bool(policy.allowed_merchants) and merchant not in policy.allowed_merchants,
+            "DENY", f"merchant '{order.merchant}'" + ("" if policy.allowed_merchants else " (no allowlist)"))
+    add("category_allowlist", bool(policy.allowed_categories) and category not in policy.allowed_categories,
+        "DENY", f"category '{order.category}'")
+    add("hard_max_per_order", amount > policy.hard_max_per_order or (prior > 0 and purchase > policy.hard_max_per_order),
+        "DENY", f"purchase {purchase} (this order {amount} + same item earlier in request {prior}) "
+                f"vs hard max {policy.hard_max_per_order} {cur}")
+    denied = any(r["outcome"] == "DENY" for r in rows)
+    soft = [("per_order_cap", amount > policy.per_order_cap or (prior > 0 and purchase > policy.per_order_cap),
+             f"purchase {purchase} vs per-order cap {policy.per_order_cap} {cur}"),
+            ("daily_cap", spent + amount > policy.daily_cap,
+             f"today {spent} + {amount} = {spent + amount} vs daily cap {policy.daily_cap} {cur}")]
+    for rule, failed, detail in soft:
+        if denied:
+            rows.append({"rule": rule, "outcome": "SKIPPED", "detail": "a deny rule already decided: " + detail})
+        elif soft_waived:
+            rows.append({"rule": rule, "outcome": "WAIVED" if failed else "PASS",
+                         "detail": ("waived by human approval: " if failed else "") + detail})
+        else:
+            add(rule, failed, "NEEDS_APPROVAL", detail)
+    return rows
+
+
 def hard_rules_only(policy: Policy, order: OrderRequest,
                     related_prior: Decimal = Decimal("0")) -> Decision:
     """Used when a human approves: the soft caps (per-order cap, daily cap) are waived;

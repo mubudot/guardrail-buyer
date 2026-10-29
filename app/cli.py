@@ -5,7 +5,11 @@
 AGENT_MODE=offline uses the rule-based parser (no AI key needed).
 
 Uses a fresh in-memory ledger each run, so it does not share spend with a running
-server; set CLI_DB_PATH=guardrail.db to use the server's database instead.
+server. CLI_DB_PATH=<file> uses a database file instead. With the mock PayPal
+(PAYPAL_MODE=mock, the default) the CLI must own that file exclusively, exactly like a
+server (mock PayPal state is in-memory): it takes the same lock and refuses with exit
+code 3 while a mock server (or another CLI) uses the database. Sharing a database with a
+running server is only possible in Sandbox mode.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ os.environ.setdefault("GRB_NO_AUTOAPP", "1")
 
 from .offline_agent import make_agent  # noqa: E402
 from .main import build_service  # noqa: E402
+from .service import MockLockError  # noqa: E402
 
 
 def main(argv: list[str]) -> int:
@@ -24,6 +29,21 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     svc = build_service(db_path=os.environ.get("CLI_DB_PATH", ":memory:"))
+    try:
+        # same single-process ownership as the server (CODEX_REVIEW_3 #3); a no-op for
+        # the in-memory default and for Sandbox mode
+        svc.invalidate_lost_mock_orders()
+    except MockLockError as e:
+        print(f"ERROR: {e}\nThe CLI cannot share a mock-mode database with a running server: "
+              f"unset CLI_DB_PATH (own in-memory DB) or stop the server.", file=sys.stderr)
+        return 3
+    try:
+        return _run(svc, argv)
+    finally:
+        svc.release_mock_lock()
+
+
+def _run(svc, argv: list[str]) -> int:
     res = make_agent(svc).run(" ".join(argv))
     for step in res.transcript:
         if step["role"] == "tool":
