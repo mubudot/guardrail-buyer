@@ -83,7 +83,7 @@ If you serve on a port other than 8000, also set `PUBLIC_BASE_URL` (used for the
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `56 passed` (no network, no API key needed).
+1. **Run the tests** — `python -m pytest -q` → see `57 passed` (no network, no API key needed).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
