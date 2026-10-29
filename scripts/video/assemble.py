@@ -29,7 +29,7 @@ def main():
         ms = int(max(0.0, mapped(sc["start"]) + 0.25) * 1000)
         af.append(f"[{i}:a]aresample=44100,adelay={ms}|{ms}[a{i}]")
         labels.append(f"[a{i}]")
-    af.append("".join(labels) + f"amix=inputs={len(labels)}:normalize=0,apad,atrim=0:{length:.2f}[a]")
+    af.append("".join(labels) + f"amix=inputs={len(labels)}:normalize=0,volume=0.85,apad,atrim=0:{length:.2f}[a]")
     cmd = ["ffmpeg", "-y", "-loglevel", "error", *inputs, "-filter_complex", ";".join([vf, *af]),
            "-map", "[v]", "-map", "[a]", "-t", f"{length:.2f}", "-c:v", "libx264", "-preset", "medium",
            "-crf", "23", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", a.out]
