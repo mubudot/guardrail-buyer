@@ -27,9 +27,9 @@ hire, and a $100 gift card as a welcome present"). The agent (Claude, using tool
 in a catalog, dry-runs the spend policy and places orders, and every order passes a **deterministic
 policy engine on the server** before it reaches PayPal:
 
-- **ALLOW** (under the per-order cap and today's budget) → a real **PayPal Orders v2** order is created
-  in the Sandbox and the amount is **reserved** against the daily budget. The buyer approves on PayPal,
-  PayPal redirects back, and the app **captures** the payment.
+- **ALLOW** (under the per-order cap and today's budget) → the amount is **reserved** against the daily
+  budget in the same database transaction as the check, then a real **PayPal Orders v2** order is created
+  in the Sandbox. The buyer approves on PayPal, PayPal redirects back, and the app **captures** the payment.
 - **NEEDS APPROVAL** (over a cap) → the agent files an approval request with a business justification;
   a human approves or rejects it in the dashboard (approver token required). Approval re-checks the
   deny rules before a PayPal order is created.
@@ -49,9 +49,12 @@ reserved, headroom).
   idempotency, `payer-action` approval link, return/cancel URLs, live `GET` status, capture after
   approval, structured error handling (e.g. a capture before approval returns `422 ORDER_NOT_APPROVED`,
   which the app turns into `409 NOT_APPROVED_YET` without touching the order or the budget).
-- **Spend accounting:** an order's amount is reserved when the PayPal order is created, so an agent
-  can't open many unpaid orders to get around the daily cap; cancel, expiry and failed captures release
-  the reservation.
+- **Spend accounting:** the budget check and the reservation run in one SQLite `BEGIN IMMEDIATE`
+  transaction *before* PayPal is called, so concurrent requests can't all pass against the same budget.
+  Order status changes are compare-and-set updates with a `CAPTURING` state that cancel/expiry can't
+  override. Ambiguous PayPal outcomes (5xx, timeouts, capture `PENDING`) keep the reservation and are
+  reconciled from PayPal's order status; only a confirmed `COMPLETED` capture counts as paid. Approvals are
+  claimed once and bound to the exact quote (product, quantity, amount, currency, merchant).
 - **AI:** Claude (`claude-sonnet-5-5`) through the Anthropic Messages API with four tools:
   `search_catalog`, `check_policy`, `create_order`, `request_approval`. The model never sees PayPal
   credentials.
@@ -59,8 +62,9 @@ reserved, headroom).
   grid with PayPal links, spend-vs-caps grid).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 68 pytest tests (guardrails, payment flow, reservations/expiry, API, agent loop with a
-  scripted fake LLM, offline mode) plus a live Sandbox smoke script.
+- **Tests:** 110 pytest tests (guardrails, payment flow, reservations/expiry, API, agent loop with a
+  scripted fake LLM, offline mode, and thread/barrier concurrency tests for budget races, double
+  approvals and cancel-vs-capture) plus a live Sandbox smoke script.
 
 ## Challenges we ran into
 
@@ -71,16 +75,31 @@ reserved, headroom).
   created. Counting only captured payments would let an agent open ten $49 orders at once. We reserve
   at creation and release on cancel/expiry/capture failure.
 - **PayPal edge cases:** idempotent capture on a refreshed return URL, a lost redirect (manual capture
-  endpoint), captures attempted before approval, and expiring stale orders.
+  endpoint), captures attempted before approval, expiring stale orders, and responses lost after PayPal
+  may already have captured.
+- **Races.** An independent review reproduced concurrent requests passing the daily cap together, one
+  approval producing two orders, and a cancel redirect erasing a capture in progress. We fixed each with
+  atomic SQLite transactions and conditional status updates, and added concurrency regression tests.
 - **LLM output quirks:** occasionally an empty final message after parallel tool calls; we added a
   deterministic summary built from the tool results.
 
 ## Accomplishments that we're proud of
 
-- The full loop works end to end against the real PayPal Sandbox: natural-language request → policy →
-  Sandbox order → buyer approval → capture, with approvals and refusals in the same run.
-- The guardrails are boring in the best way: deterministic, unit-tested, and impossible for the model to
-  bypass.
+- Natural-language request → policy → real PayPal Sandbox order works live, together with approvals
+  and refusals in the same run; live Sandbox status, capture-before-approval refusal and cancel are
+  verified (`docs/sandbox_smoke_run.txt`). *Pending:* the final step (a Sandbox personal buyer approves and
+  the order is captured) is tested against the mock and a wire-format fake of the Sandbox API, but a
+  real Sandbox buyer test has not been recorded yet.
+- The guardrails are boring in the best way: deterministic and tested. The model can only call four
+  tools; it never chooses prices or merchants (they come from the server catalog), cannot escalate a
+  DENY, cannot reuse an approval or change its amount, and cannot get around the caps by firing
+  requests in parallel or by splitting one item into several orders within a request.
+
+**Known limitations (honest scope):** authentication is local-demo scope (one shared approver token, no
+per-requester identity or rate limits, so don't expose it publicly); catalog merchants are labels and all
+payments go to the single Sandbox merchant of the configured app; spend counts on the day it was reserved;
+policy changes don't revoke orders already created; split-order aggregation covers only the same item
+from the same merchant within one request; mock PayPal state is in memory. Details in the README.
 - Judges can run everything locally in a few minutes, with or without an AI key and with or without a
   PayPal Sandbox app (a local mock covers the PayPal side).
 
@@ -94,7 +113,8 @@ reserved, headroom).
 ## What's next for GuardRail Buyer
 
 - PayPal webhooks (`CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`) instead of relying on the
-  return redirect.
+  return redirect and on-demand reconciliation.
+- Requester authentication, ownership and rate limits; mapping catalog merchants to real payees.
 - Vaulted payment methods / PayPal Agent Toolkit for trusted, pre-approved recurring purchases within caps.
 - Per-requester budgets, multiple approvers, and Slack/email approval links.
 - Real merchant catalogs instead of the demo catalog.
@@ -122,11 +142,12 @@ Everything runs locally; no account is needed for the default mode.
 git clone <GITHUB_URL> && cd paypal-guardrail-buyer
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-python -m pytest -q                      # 68 passed, no network
 
-# Full flow without any key (mock PayPal + offline rule-based agent):
-AGENT_MODE=offline APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000
+# Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
+export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
+export DB_PATH="$(mktemp -d)/guardrail-demo.db"
+python -m pytest -q                      # 110 passed, no network
+uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card
 # → cables: order + "Pay with PayPal" (local mock checkout) · keyboard: approval request · gift card: refused

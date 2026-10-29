@@ -24,8 +24,11 @@ def test_over_cap_requires_approval_then_approve(service):
     assert done["result"] == "ORDER_PLACED"
     assert service.store.get("approvals", a["approval_id"])["status"] == "APPROVED"
     assert str(service.spent_today()) == "89.00"
+    again = service.approve(a["approval_id"])  # retry returns the same order, spends nothing new
+    assert again["replayed"] and again["order"]["id"] == done["order"]["id"]
+    assert str(service.spent_today()) == "89.00" and len(service.store.list("orders")) == 1
     with pytest.raises(ValueError):
-        service.approve(a["approval_id"])
+        service.reject(a["approval_id"])
 
 
 def test_reject(service):
@@ -109,6 +112,8 @@ def test_rest_endpoints(service):
     a = service.request_approval("P-1004", 1, "monitor")
     assert len(client.get("/approvals?status=PENDING").json()) == 1
     assert client.post(f"/approvals/{a['approval_id']}/approve").json()["result"] == "ORDER_PLACED"
-    assert client.post(f"/approvals/{a['approval_id']}/approve").status_code == 409
+    again = client.post(f"/approvals/{a['approval_id']}/approve").json()  # idempotent replay
+    assert again["replayed"] is True and len(client.get("/orders").json()) == 2
+    assert client.post(f"/approvals/{a['approval_id']}/reject").status_code == 409
     assert client.post("/approvals/APR-NOPE/reject").status_code == 404
     assert client.post("/agent/request", json={"request": ""}).status_code == 422

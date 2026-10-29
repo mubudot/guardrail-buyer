@@ -19,7 +19,7 @@ from .service import BuyerService
 
 OFFLINE_MODEL_NAME = "offline-rules (no AI)"
 
-NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "single": 1, "two": 2, "pair": 2, "couple": 2,
+NUMBER_WORDS = {"zero": 0, "a": 1, "an": 1, "one": 1, "single": 1, "two": 2, "pair": 2, "couple": 2,
                 "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
                 "nine": 9, "ten": 10, "dozen": 12}
 
@@ -38,6 +38,12 @@ SYNONYMS = {
 STOP = {"the", "of", "for", "and", "with", "our", "new", "box", "pack", "bag", "bags", "buy",
         "order", "get", "please", "some", "team", "sandbox", "co", "inch", "2m", "1kg", "x"}
 SPLIT_RE = re.compile(r",|;|\n|\band also\b|\balso\b|\bplus\b|\bas well as\b|\band\b|&", re.I)
+# Restricted grammar: the offline parser only understands positive shopping lists.
+# Anything negated or conditional is refused as a whole (never partially executed),
+# because clause splitting could otherwise drop the negation ("don't buy X and Y").
+NEGATION_RE = re.compile(
+    r"\b(?:don['’]?t|do\s+not|doesn['’]?t|does\s+not|didn['’]?t|no|not|never|none|nothing|without|"
+    r"except|cancel|stop|unless|if|instead\s+of)\b", re.I)
 QTY_RE = re.compile(r"(?<![\$\d.])\b(\d{1,3})\b(?!\s*(?:-?\s*inch|%|kg|g\b|m\b|sheets|\.\d))", re.I)
 
 
@@ -109,7 +115,7 @@ class OfflineAgent:
     def _quantity(clause: str) -> int:
         m = QTY_RE.search(clause)
         if m:
-            return max(1, min(int(m.group(1)), 999))
+            return min(int(m.group(1)), 999)  # 0 is kept as 0 and refused in run()
         for w in re.findall(r"[a-z]+", clause.lower()):
             if w in NUMBER_WORDS and w not in ("a", "an"):
                 return NUMBER_WORDS[w]
@@ -117,18 +123,38 @@ class OfflineAgent:
 
     # ---- run -----------------------------------------------------------
     def _tool(self, res: AgentResult, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        out = self._tools._run_tool(name, args)
+        out = self._tools._run_tool(name, args, request_id=res.request_id)
         res.transcript.append({"role": "tool", "name": name, "input": args, "output": out})
         return out
+
+    @staticmethod
+    def refusal(request: str) -> str | None:
+        """Why the whole request is refused (negated / conditional language), or None."""
+        m = NEGATION_RE.search(request)
+        if m:
+            return (f"- Offline mode refused the whole request: it contains \"{m.group(0)}\". "
+                    "The rule-based parser only handles positive shopping lists "
+                    "(e.g. \"2 USB-C cables and a wireless mouse\"); negated or conditional "
+                    "requests are never executed. Nothing was ordered.")
+        return None
 
     def run(self, request: str) -> AgentResult:
         res = AgentResult(final_text="", stopped_reason="offline_rules")
         res.transcript.append({"role": "user", "text": request})
+        refused = self.refusal(request)
+        if refused:
+            res.turns = 1
+            res.stopped_reason = "offline_refused"
+            res.final_text = "[offline rule-based mode, no AI]\n" + refused
+            return res
         lines = self.parse(request)
         notes = []
         for ln in lines:
             if ln["product_id"] is None:
                 notes.append(f"- \"{ln['clause']}\": not found in the catalog (offline mode only matches catalog items)")
+                continue
+            if ln["quantity"] < 1:
+                notes.append(f"- \"{ln['clause']}\": quantity 0, nothing ordered")
                 continue
             p = self.service.catalog.get(ln["product_id"])
             self._tool(res, "search_catalog", {"query": p["name"].lower()})

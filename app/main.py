@@ -46,6 +46,9 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
                   description="AI purchasing agent with PayPal spend guardrails (Sandbox)")
     svc = service or build_service()
     app.state.service = svc
+    lost = svc.invalidate_lost_mock_orders()  # mock provider state is in-memory (B9)
+    if lost:
+        log.warning("mock PayPal state was reset: %d open mock order(s) marked MOCK_RESET", len(lost))
     app.state.agent = agent or make_agent(svc)
     token = approver_token if approver_token is not None else os.environ.get("APPROVER_TOKEN", "")
     if not token:
@@ -105,11 +108,17 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
 
     def _decide(approval_id: str, fn):
         try:
-            return fn(approval_id)
+            out = fn(approval_id)
         except KeyError:
             raise HTTPException(404, f"approval {approval_id} not found")
         except ValueError as e:
             raise HTTPException(409, str(e))
+        if out.get("result") == "QUOTE_CHANGED":
+            raise HTTPException(409, "quote changed since approval was requested "
+                                     f"(approved {out['approved_quote']['amount']}, now "
+                                     f"{(out['current_quote'] or {}).get('amount', 'unavailable')}); "
+                                     "nothing was bought, request a fresh approval")
+        return out
 
     @app.post("/approvals/{approval_id}/approve", dependencies=[Depends(require_approver)])
     def approve(approval_id: str):
@@ -143,12 +152,27 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
                                       "order": {k: v for k, v in out.items() if k not in ("error",)}})
         return out
 
+    @app.post("/orders/{order_id}/reconcile")
+    def reconcile_order(order_id: str):
+        """Resolve an order whose payment outcome is unknown (NEEDS_RECONCILIATION) from
+        PayPal's order status. Never creates a second charge."""
+        try:
+            return svc.reconcile(order_id)
+        except KeyError:
+            raise HTTPException(404, "unknown order")
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+
     @app.post("/orders/{order_id}/cancel", dependencies=[Depends(require_approver)])
     def cancel_order(order_id: str):
         try:
-            return svc.cancel(order_id)
+            out = svc.cancel(order_id)
         except KeyError:
             raise HTTPException(404, "unknown order")
+        if out["result"] == "NOT_CANCELLABLE":
+            raise HTTPException(409, f"order {order_id} is {out['status']}; only orders awaiting "
+                                     "payer approval can be cancelled")
+        return out
 
     # ---- PayPal buyer round trip ---------------------------------------
     # PayPal redirects the buyer to return_url?token=<paypal order id>&PayerID=...
@@ -167,13 +191,18 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
 
     @app.get("/paypal/cancel")
     def paypal_cancel(token: str, format: str = "html"):
+        """PayPal's cancel redirect. Only an order still awaiting payer approval is
+        cancelled (atomically); an order being captured, captured, or of unknown outcome
+        is left untouched, so this unauthenticated GET can never erase recorded spend."""
         try:
             order = svc.cancel_payment(token)
         except KeyError:
             raise HTTPException(404, "unknown PayPal order")
         if format == "json":
             return order
-        return RedirectResponse(f"/?cancelled={order['id']}", status_code=303)
+        if order["result"] in ("CANCELLED", "ALREADY_CANCELLED"):
+            return RedirectResponse(f"/?cancelled={order['id']}", status_code=303)
+        return RedirectResponse(f"/?paid={order['id']}&status={order['status']}", status_code=303)
 
     @app.get("/paypal/mock-checkout", response_class=HTMLResponse, include_in_schema=False)
     def mock_checkout(token: str):
@@ -183,7 +212,8 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
         try:
             o = svc.paypal.get_order(token)["raw"]
         except PayPalError:
-            raise HTTPException(404, "unknown mock order")
+            raise HTTPException(404, "unknown mock order (mock PayPal state is in-memory and is "
+                                     "reset when the server restarts; place a new order)")
         t = html.escape(token)
         return f"""<!doctype html><html><head><meta charset="utf-8"><title>Mock PayPal checkout</title>
 <link rel="stylesheet" href="/static/app.css"></head><body class="checkout">

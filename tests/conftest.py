@@ -42,3 +42,17 @@ def clock():
 @pytest.fixture
 def service(policy, catalog, clock):
     return BuyerService(policy, catalog, MockPayPal(), ":memory:", clock=clock)
+
+
+# Settings a user may have exported in their shell (e.g. the README's offline block).
+# Tests must not depend on them; tests that need one set it explicitly.
+_APP_ENV = ("AGENT_MODE", "PAYPAL_MODE", "PAYPAL_MOCK_APPROVAL", "PAYPAL_AUTH", "PAYPAL_CLIENT_ID",
+            "PAYPAL_CLIENT_SECRET", "PAYPAL_BASE_URL", "PUBLIC_BASE_URL", "APPROVER_TOKEN", "DB_PATH",
+            "CLI_DB_PATH", "POLICY_PATH", "CATALOG_PATH", "MODEL", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL", "PAYPAL_APPROVAL_TTL_MIN")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_env(monkeypatch):
+    for k in _APP_ENV:
+        monkeypatch.delenv(k, raising=False)

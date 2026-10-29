@@ -107,12 +107,20 @@ class Decision:
         return {"verdict": self.verdict.value, "reasons": list(self.reasons)}
 
 
-def evaluate(policy: Policy, order: OrderRequest, spent_today: Decimal = Decimal("0")) -> Decision:
-    """Pure policy check. DENY reasons win over NEEDS_APPROVAL reasons."""
+def evaluate(policy: Policy, order: OrderRequest, spent_today: Decimal = Decimal("0"),
+             related_prior: Decimal = Decimal("0")) -> Decision:
+    """Pure policy check. DENY reasons win over NEEDS_APPROVAL reasons.
+
+    `related_prior` is the amount already ordered for the same SKU at the same merchant
+    within the same agent request (anti-splitting). The per-purchase caps
+    (per_order_cap, hard_max_per_order) apply to `amount + related_prior`; the daily
+    cap is unaffected because those orders are already in `spent_today`."""
     deny: list[str] = []
     approve: list[str] = []
     amount = money(order.amount)
     spent = money(spent_today)
+    prior = money(related_prior)
+    purchase = amount + prior  # the whole purchase this order belongs to
     merchant = order.merchant.strip().lower()
     category = order.category.strip().lower()
 
@@ -128,12 +136,19 @@ def evaluate(policy: Policy, order: OrderRequest, spent_today: Decimal = Decimal
         deny.append(f"category '{order.category}' is not on the allowlist")
     if amount > policy.hard_max_per_order:
         deny.append(f"amount {amount} exceeds hard maximum {policy.hard_max_per_order} {policy.currency}")
+    elif prior > 0 and purchase > policy.hard_max_per_order:
+        deny.append(f"same item in this request totals {purchase} (already {prior}), over hard maximum "
+                    f"{policy.hard_max_per_order} {policy.currency}")
 
     if deny:
         return Decision(Verdict.DENY, tuple(deny))
 
     if amount > policy.per_order_cap:
         approve.append(f"amount {amount} exceeds per-order cap {policy.per_order_cap} {policy.currency}")
+    elif prior > 0 and purchase > policy.per_order_cap:
+        approve.append(f"same item from the same merchant in this request totals {purchase} "
+                       f"(already ordered {prior}), over per-order cap {policy.per_order_cap} {policy.currency}; "
+                       f"split orders count as one purchase")
     if spent + amount > policy.daily_cap:
         approve.append(
             f"daily spend would be {spent + amount} (already {spent}), over daily cap {policy.daily_cap} {policy.currency}"
@@ -152,21 +167,31 @@ def hard_rules_only(policy: Policy, order: OrderRequest) -> Decision:
 
 
 class SpendLedger:
-    """Daily spend tracking backed by SQLite (thread-safe for FastAPI)."""
+    """Daily spend tracking backed by SQLite.
 
-    def __init__(self, db_path: str = ":memory:"):
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS spend (
+    One row per order reference. A row is a *reservation* while its order is open
+    and *captured spend* once the order completes; it is deleted when the order is
+    released (cancelled / expired / definitively failed). `BuyerService` shares its
+    connection and lock with the ledger so the budget check and the reservation
+    happen in one SQLite transaction."""
+
+    SCHEMA = """CREATE TABLE IF NOT EXISTS spend (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                    day TEXT NOT NULL,
                    amount_cents INTEGER NOT NULL,
                    currency TEXT NOT NULL,
                    order_ref TEXT,
                    created_at TEXT NOT NULL)"""
-        )
-        self._conn.commit()
+
+    def __init__(self, db_path: str = ":memory:", conn: sqlite3.Connection | None = None,
+                 lock: "threading.RLock | None" = None):
+        self._lock = lock or threading.RLock()
+        if conn is None:
+            conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30, isolation_level=None)
+        self._conn = conn  # autocommit (isolation_level=None) unless inside BEGIN ... COMMIT
+        with self._lock:
+            self._conn.execute(self.SCHEMA)
+            self._conn.execute("CREATE INDEX IF NOT EXISTS spend_ref ON spend(order_ref)")
 
     def record(self, day: str, amount: Decimal, currency: str, order_ref: str | None = None) -> None:
         cents = int(money(amount) * 100)
@@ -175,13 +200,11 @@ class SpendLedger:
                 "INSERT INTO spend(day, amount_cents, currency, order_ref, created_at) VALUES (?,?,?,?,?)",
                 (day, cents, currency.upper(), order_ref, datetime.now(ZoneInfo("UTC")).isoformat()),
             )
-            self._conn.commit()
 
     def release(self, order_ref: str) -> int:
         """Drop the spend reserved for an order (cancelled / expired / failed capture)."""
         with self._lock:
             cur = self._conn.execute("DELETE FROM spend WHERE order_ref=?", (order_ref,))
-            self._conn.commit()
             return cur.rowcount
 
     def spent_on(self, day: str, currency: str) -> Decimal:

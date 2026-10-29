@@ -44,8 +44,8 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px 28px 40px; display: grid
 .ag-theme-quartz { --ag-font-size: 13px; --ag-header-height: 40px; }
 .st { font-weight: 600; font-size: 12px; }
 .st.COMPLETED, .st.ALLOW, .st.APPROVED { color: var(--ok); }
-.st.PAYER_ACTION_REQUIRED, .st.PENDING, .st.NEEDS_APPROVAL, .st.CREATING { color: var(--warn); }
-.st.FAILED, .st.CANCELLED, .st.EXPIRED, .st.CAPTURE_FAILED, .st.REJECTED, .st.DENY, .st.DENIED_BY_POLICY { color: var(--bad); }
+.st.PAYER_ACTION_REQUIRED, .st.PENDING, .st.NEEDS_APPROVAL, .st.CREATING, .st.CAPTURING, .st.EXECUTING, .st.NEEDS_RECONCILIATION { color: var(--warn); }
+.st.FAILED, .st.CANCELLED, .st.EXPIRED, .st.CAPTURE_FAILED, .st.REJECTED, .st.DENY, .st.DENIED_BY_POLICY, .st.QUOTE_CHANGED, .st.MOCK_RESET { color: var(--bad); }
 .toast { position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: #fff; padding: 10px 16px;
   border-radius: 8px; box-shadow: 0 6px 20px #0003; max-width: 420px; }
 /* mock checkout page */

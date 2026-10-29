@@ -10,3 +10,5 @@ __pycache__/
 venv/
 build/
 docs/demo_draft.mp4
+*.db-wal
+*.db-shm

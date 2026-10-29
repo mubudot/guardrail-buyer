@@ -8,11 +8,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import httpx
 
+from .paypal_client import PayPalError
 from .service import BuyerService
 
 DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -95,6 +97,9 @@ def fallback_summary(transcript: list[dict[str, Any]]) -> str:
             lines.append(f"- {what}: needs human approval ({out.get('approval_id')}): {'; '.join(out.get('reasons', []))}")
         elif r == "DENIED":
             lines.append(f"- {what}: refused: {'; '.join(out.get('reasons', []))}")
+        elif r == "PAYMENT_UNCONFIRMED":
+            lines.append(f"- {what}: order {o.get('id')} ${o.get('amount')} payment outcome unconfirmed; "
+                         f"budget stays reserved until it is reconciled with PayPal")
         elif r == "FAILED":
             lines.append(f"- {what}: PayPal order failed: {o.get('error') or o.get('paypal_status')}")
     return "\n".join(lines)
@@ -118,7 +123,10 @@ def anthropic_post(payload: dict[str, Any], base_url: str | None = None, timeout
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
         headers["x-api-key"] = key
-    r = httpx.post(f"{base}/v1/messages", json=payload, headers=headers, timeout=timeout)
+    try:
+        r = httpx.post(f"{base}/v1/messages", json=payload, headers=headers, timeout=timeout)
+    except httpx.TransportError as e:
+        raise LLMError(f"Messages API transport error: {type(e).__name__}") from e
     if r.status_code != 200:
         raise LLMError(f"Messages API HTTP {r.status_code}: {r.text[:300]}")
     return r.json()
@@ -131,10 +139,11 @@ class AgentResult:
     usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
     turns: int = 0
     stopped_reason: str = ""
+    request_id: str = field(default_factory=lambda: "REQ-" + uuid.uuid4().hex[:10].upper())
 
     def to_dict(self) -> dict[str, Any]:
         return {"final_text": self.final_text, "transcript": self.transcript, "usage": self.usage,
-                "turns": self.turns, "stopped_reason": self.stopped_reason}
+                "turns": self.turns, "stopped_reason": self.stopped_reason, "request_id": self.request_id}
 
 
 class PurchasingAgent:
@@ -146,20 +155,22 @@ class PurchasingAgent:
         self.post = post or anthropic_post
         self.max_turns, self.max_tokens = max_turns, max_tokens
 
-    def _run_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    def _run_tool(self, name: str, args: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
+        """Dispatch one tool call. `request_id` ties every order of one agent request
+        together so split orders of the same SKU count as one purchase."""
         s = self.service
         try:
             if name == "search_catalog":
                 return {"products": s.catalog.search(args.get("query", ""), args.get("category"), args.get("max_price"))}
             if name == "check_policy":
-                return s.check(args["product_id"], int(args.get("quantity", 1)))
+                return s.check(args["product_id"], int(args.get("quantity", 1)), request_id=request_id)
             if name == "create_order":
-                return s.place_order(args["product_id"], int(args.get("quantity", 1)))
+                return s.place_order(args["product_id"], int(args.get("quantity", 1)), request_id=request_id)
             if name == "request_approval":
                 return s.request_approval(args["product_id"], int(args.get("quantity", 1)),
-                                          str(args.get("justification", "")))
+                                          str(args.get("justification", "")), request_id=request_id)
             return {"error": f"unknown tool {name}"}
-        except (KeyError, ValueError) as e:
+        except (KeyError, ValueError, TypeError, PayPalError) as e:
             return {"error": str(e)}
 
     def run(self, request: str) -> AgentResult:
@@ -167,8 +178,16 @@ class PurchasingAgent:
         res = AgentResult(final_text="")
         res.transcript.append({"role": "user", "text": request})
         for turn in range(1, self.max_turns + 1):
-            resp = self.post({"model": self.model, "max_tokens": self.max_tokens, "system": SYSTEM_PROMPT,
-                              "tools": TOOLS, "messages": messages})
+            try:
+                resp = self.post({"model": self.model, "max_tokens": self.max_tokens, "system": SYSTEM_PROMPT,
+                                  "tools": TOOLS, "messages": messages})
+            except LLMError as e:
+                if not any(t.get("role") == "tool" for t in res.transcript):
+                    raise
+                # tools already ran (orders may exist): keep and report the partial result
+                res.stopped_reason = "llm_error"
+                res.final_text = (fallback_summary(res.transcript) + f"\n- stopped early: {e}").strip()
+                return res
             res.turns = turn
             u = resp.get("usage", {})
             res.usage["input_tokens"] += int(u.get("input_tokens", 0))
@@ -186,7 +205,7 @@ class PurchasingAgent:
                 return res
             results = []
             for b in tool_uses:
-                out = self._run_tool(b["name"], b.get("input") or {})
+                out = self._run_tool(b["name"], b.get("input") or {}, request_id=res.request_id)
                 res.transcript.append({"role": "tool", "name": b["name"], "input": b.get("input"), "output": out})
                 results.append({"type": "tool_result", "tool_use_id": b["id"],
                                 "content": json.dumps(out, default=str)})

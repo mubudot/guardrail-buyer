@@ -15,7 +15,7 @@ async function api(path, opts = {}) {
   return body;
 }
 const usd = (v) => (v == null ? "" : "$" + Number(v).toFixed(2));
-const LABEL = {PAYER_ACTION_REQUIRED: "AWAITING PAYER", NEEDS_APPROVAL: "NEEDS APPROVAL"};
+const LABEL = {PAYER_ACTION_REQUIRED: "AWAITING PAYER", NEEDS_APPROVAL: "NEEDS APPROVAL", NEEDS_RECONCILIATION: "UNCONFIRMED"};
 const statusCell = (p) => p.value ? `<span class="st ${p.value}">${LABEL[p.value] || p.value.replaceAll("_", " ")}</span>` : "";
 const time = (p) => p.value ? new Date(p.value).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "";
 
