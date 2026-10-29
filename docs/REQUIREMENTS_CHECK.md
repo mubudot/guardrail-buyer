@@ -1,55 +1,59 @@
 # PayPal AI Hackathon — requirements check
 
 Source: Official Rules <https://paypalaihackathon.devpost.com/rules> and the Overview page
-<https://paypalaihackathon.devpost.com/>, re-read 2026-10-30; status updated in review iteration 3 (2026-10-30 ~03:30 Asia/Taipei).
-Deadline: **Nov 12, 2026 12:00 PM PST** (= Nov 13 04:00 Asia/Taipei).
+<https://paypalaihackathon.devpost.com/>, re-read 2026-10-30 (cross-check round 5, ~07:00 Asia/Taipei).
+Deadline: **Nov 12, 2026 12:00 PM PST** (= Nov 13 04:00 Asia/Taipei). Judging Dec 1–15, 2026; testing
+access must stay free until judging ends.
 
 Legend: ✅ done · 🟡 partly / needs a decision · ❌ not done yet
 
-## Project requirements (Rules §4 "Project Requirements", Overview "Your project should")
+## Project requirements (Rules §4 "Project Requirements")
 
-| # | Requirement | Status | Evidence / gap |
+| # | Requirement (rules wording, shortened) | Status | Evidence / gap |
 |---|---|---|---|
-| 1 | Integrates the PayPal developer platform **using the free Sandbox** | ✅ | Orders v2 against `api-m.sandbox.paypal.com`: create (intent CAPTURE, payer-action link), GET status, capture, error handling (`app/paypal_client.py`). Verified live with `scripts/sandbox_smoke.py` → `docs/sandbox_smoke_run.txt`. **Real buyer approval → capture verified 2026-10-30**: Claude agent order → Sandbox personal test buyer pays → `/paypal/return` → capture `8VA9873790040992M` `COMPLETED` (app + PayPal GET), see `docs/SANDBOX_E2E.md` + `docs/screenshots/` |
-| 2 | "PayPal integration is central to the project" / meaningful | ✅ | Every purchase is a PayPal order; spend is reserved at order creation and released on cancel/expiry/capture failure; capture only after buyer approval |
-| 3 | Meaningfully incorporates an AI tool/model | ✅ | Claude (Messages API, tool use) is the purchasing agent (`app/agent.py`); live transcripts in `docs/sample_transcript.json`, `docs/sample_cli_run.txt` |
-| 4 | Working prototype, functions as shown in video/description | ✅ | 196 offline tests (fix round 6, incl. concurrency, recovery, legacy-upgrade and audit regressions); iteration 3 fresh clone (new venv) → `68 passed` at that time, and the judge flow with **no key** (`AGENT_MODE=offline`, mock PayPal with mock checkout): ask → cables order → mock pay → `COMPLETED` + capture id; keyboard approval → 401 without token, approve with token → new order; gift card refused; spend 25.98 captured + 89.00 reserved |
-| 5 | Sufficiently documented for judges | ✅ | README: architecture, payment flow, repro steps "do X → see Y", REST API, configuration |
-| 6 | New, or significantly updated during the Submission Period (Oct 1 – Nov 12) | ✅ | New project; first commit 2026-10-30. Say "built from scratch during the hackathon" in the Devpost text |
-| 7 | Third-party APIs used within their terms | ✅ | PayPal Sandbox, Anthropic API, AG Grid Community 32.3.3 (MIT), **vendored** in `app/static/vendor/ag-grid-community-32.3.3/` with its LICENSE (no CDN, works offline) |
-| 8 | Sponsor-prize specific requirements (§8) | ✅ | Rules only require "use any AG Grid tools" — the dashboard uses AG Grid Community 32.3.3, vendored (4 grids: approvals with action buttons, orders with Pay links, spend vs caps, and since fix round 6 an **Audit** grid of every guardrail decision with floating column filters, quick-filter search, `cellClassRules`/`rowClassRules` risk highlighting, CSV export, `getRowId` delta updates and a row-click detail panel). Community features only, no Enterprise modules. No further AG Grid conditions are listed |
+| 1 | Integrates the PayPal developer platform **using the free Sandbox** | ✅ | Orders v2 against `api-m.sandbox.paypal.com`: OAuth2, create (intent CAPTURE, payer-action link, `PayPal-Request-Id`), GET status, capture, structured errors (`app/paypal_client.py`). Live smoke `docs/sandbox_smoke_run.txt`; real buyer approval → capture `COMPLETED` verified 2026-10-30 (`docs/SANDBOX_E2E.md`, `docs/screenshots/`) |
+| 2 | "Any AI tool works, as long as PayPal integration is central" | ✅ | Every purchase is a PayPal order; budget reserved at order creation, released only on cancel/expiry/definitive failure; capture only after buyer approval |
+| 3 | Uses an AI tool/model | ✅ | Claude (Messages API, tool use) is the purchasing agent (`app/agent.py`); live transcripts `docs/sample_transcript.json`, `docs/live_claude_smoke_transcript.json` |
+| 4 | Functionality: installs and runs consistently, functions as in video/description | ✅ | Round-5 judge repro from a fresh clone (README offline block, no keys): `255 passed, 1 skipped`, server ready check, ask → cables order / keyboard approval / gift card refused, mock Pay now → `COMPLETED` + capture id, approve 401 without token / OK with token, spend 25.98 captured + 89.00 reserved, reject, Audit API, CLI. See `docs/REVIEW_LOG.md` |
+| 5 | Platforms: runs on the intended platform | ✅ | Local web app (Python 3.11+, any desktop browser). Stated in README |
+| 6 | New, or significantly updated during the Submission Period (Oct 1 – Nov 12) | ✅ | New project; first commit 2026-10-29 (UTC). Devpost text says "built from scratch during the hackathon" |
+| 7 | Third-party SDK/APIs used within their terms | ✅ | PayPal Sandbox, Anthropic API, AG Grid Community 32.3.3 (MIT, vendored with its LICENSE), Piper TTS voice (CC BY 4.0, credited) |
+| 8 | Sponsor-prize requirements (§8): AG Grid prize = "use any AG Grid tools" | ✅ | Dashboard uses AG Grid Community 32.3.3 (vendored, no CDN): approvals grid with action buttons, orders grid with Pay links, spend-vs-caps grid, and an **Audit** grid (floating filters, quick search, `cellClassRules`/`rowClassRules` risk colouring, CSV export with formula neutralisation, `getRowId` delta updates, row-click detail panel, keyset paging). Community features only |
 
 ## Submission requirements
 
 | # | Requirement | Status | Evidence / gap |
 |---|---|---|---|
-| 9 | Text description of features and functionality | ✅ (draft) | `docs/DEVPOST.md`: inspiration, what it does, how built, challenges, accomplishments, learned, next, built with, AI disclosure, testing instructions. Fill `<GITHUB_URL>` / `<YOUTUBE_URL>` at submission |
-| 10 | Functional demo judges can run (setup instructions **or** hosted URL; mockups don't count) | ✅ | Fresh clone runs the full flow with no keys at all: `AGENT_MODE=offline` (rule-based, labelled "no AI" in UI and output) + mock PayPal. Claude mode needs an Anthropic key; real Sandbox needs the judge's own free Sandbox app (G3) |
-| 11 | Public repo on GitHub/GitLab/Bitbucket with all source, assets, instructions | ❌ | Repo is local only (by design until the user confirms). Needs: create public GitHub repo, push |
-| 12 | Open-source licence file, detectable in the repo "About" section | 🟡 | `LICENSE` = MIT (GitHub detects it). Visible in About once pushed |
-| 13 | Tools: identify which AI tools/models were used and how | ✅ | README "AI tools used" + `docs/DEVPOST.md` disclosure (Claude runtime agent, Hark coding assistant, Piper TTS for narration; offline parser is not AI) |
-| 14 | Demo video < 3 min, shows the project working, public on YouTube, link on form | 🟡 | Draft `docs/demo_draft.mp4` (not committed) built by `scripts/video/make_demo.sh` from `docs/VIDEO_SCRIPT.md`: real Sandbox + Claude run, real Sandbox checkout page, approve, buyer cancel. Missing: the real Sandbox buyer login/pay clip for scene 7 (still a placeholder). The flow itself was verified and screenshotted on 2026-10-30 (`docs/SANDBOX_E2E.md`), and those stills can stand in for the clip, but no video recording exists yet. YouTube upload by the user |
-| 15 | Video without third-party trademarks / copyrighted music without permission | ✅ (draft) | No music. Narration = Piper TTS, voice trained on LibriTTS-R (CC BY 4.0, credited on closing card). Only PayPal's own Sandbox page, AG Grid, Claude named |
-| 16 | Testing access free of charge until judging ends; include any test credentials / sandbox login details or clear instructions to obtain access | 🟡 | README explains how to create a Sandbox app + personal test account. See G3 |
+| 9 | Text description of features and functionality | ✅ (draft) | `docs/DEVPOST.md`; fill `<GITHUB_URL>` / `<YOUTUBE_URL>` at submission |
+| 10 | Functional demo judges can run (setup instructions **or** hosted URL; mockups don't count) | ✅ | Fresh clone runs the full flow with no keys (`AGENT_MODE=offline`, labelled "no AI", + mock PayPal with a mock checkout). Claude mode needs an Anthropic key (now an actionable error if missing); real Sandbox needs the judge's own free Sandbox app (G3) |
+| 11 | Public repo (GitHub/GitLab/Bitbucket) with all source, assets, instructions | ❌ | Repo is local only by design until the user confirms. Needs: create public GitHub repo, push (G4) |
+| 12 | Open-source licence file, detectable in the repo "About" section | 🟡 | `LICENSE` = MIT (GitHub detects it). Check About once pushed |
+| 13 | Identify which AI tools were used | ✅ | README "AI tools used" + `docs/DEVPOST.md`: Claude (runtime agent), Hark (coding assistant), OpenAI Codex CLI (independent reviewer), Piper TTS (narration); offline parser is not AI |
+| 14 | Demo video < 3 min, shows the project working, public on YouTube, link on form | 🟡 | Draft `docs/demo_draft.mp4` (gitignored) is 2:00.5. Missing: real Sandbox buyer login/pay footage for scene 7 (the flow itself is verified and screenshotted). YouTube upload by the user (G1) |
+| 15 | Video: no third-party trademarks / copyrighted music without permission | ✅ (draft) | No music; Piper narration credited; only PayPal's own Sandbox pages, AG Grid, Claude named |
+| 16 | Testing access free until judging ends; include test credentials / sandbox login details or clear instructions to obtain access | 🟡 | README explains creating a free Sandbox app + personal test account; mock mode needs nothing. Decision on publishing throwaway Sandbox credentials still open (G3) |
 | 17 | English materials | ✅ | All repo docs in English |
+| 18 | Original work, solely owned; open-source deps used under their licences | ✅ | Own code; vendored AG Grid MIT licence kept |
+| 19 | Privacy: no personal data in submission | ✅ | Round-5 scan of tracked files, git history and OCR of every screenshot: no personal email, real name, address, keys, tokens, account ids or tunnel URLs. Only the PayPal-generated Sandbox test buyer `sb-…@personal.example.com` and Sandbox order/capture ids appear (see `docs/REVIEW_LOG.md`) |
 
-## Judging criteria (equal weight) — where we stand
+## Judging (Stage One pass/fail: fits the theme, applies the PayPal APIs → ✅). Stage Two, equal weight
 
-| Criterion | Strength | To strengthen |
+| Criterion (rules wording) | Strength | To strengthen |
 |---|---|---|
-| Technological implementation | Real Orders v2 lifecycle, idempotency, reservation accounting, structured PayPal errors, server-side guardrails (atomic check+reserve, single-use quote-bound approvals, reconciliation of ambiguous captures; see README Known limitations), 196 tests, offline no-key mode | Optional: PayPal webhooks (`CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`) instead of relying on the redirect; PayPal Agent Toolkit / MCP mention |
-| Design | One coherent dashboard: ask box → approvals → orders → spend vs caps, plus an Audit tab (every decision, why, and what happened to the payment) | Order ids now fully visible; possible: show agent answer as cards, item column still truncates long names |
-| Potential impact | Clear problem: letting AI agents spend money safely (small teams, ops/procurement) | State the audience and a concrete scenario in the video's first 20 s |
-| Innovation | Deterministic policy gate between LLM and wallet; reserve-at-create stops "many unpaid orders" cap evasion | Mention in pitch |
-| Presentation | Video draft with narration, scene script, Devpost text; real buyer-approval run documented with screenshots (2026-10-30) | Buyer-approval clip in the video (G1) |
+| Technological implementation — "how thoroughly and skillfully does the project use PayPal Developer Platform and AI tool(s)? … non-trivial" | Full Orders v2 lifecycle with idempotency, reservation accounting, ambiguous-outcome reconciliation (now also safe for refused replays and unreadable `ORDER_ALREADY_CAPTURED`), server-side guardrails, quote-bound approvals, strict tool-argument validation, 255 tests, offline no-key mode | Optional: PayPal webhooks (`CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`) |
+| Design — "complete, coherent product experience" | One dashboard: ask box → approvals → orders → spend vs caps, plus Audit tab | Agent answer as cards (optional) |
+| Potential impact — "credible, specific case … real audience" | Letting AI agents spend money safely (small teams, ops/procurement) | State audience + scenario in the video's first 20 s |
+| Innovation/Idea | Deterministic policy gate between LLM and wallet; reserve-at-create blocks "many unpaid orders" cap evasion; split-order aggregation | Say it in the pitch |
+| Presentation — "video clearly demonstrates the project working end-to-end" | Narrated draft, scene script, Devpost text, documented real buyer-approval run | Real buyer-approval clip (G1) |
 
-Prize fit: Grand prizes; honorable mentions **Best Use of Agentic Commerce**, **Best Use of PayPal + AI**; sponsor prize **Best Use of AG Grid**.
+Prize fit: Grand prizes; honorable mentions **Best Use of Agentic Commerce**, **Best Use of PayPal + AI**
+(a project can win one grand *or* one honorable mention, plus one sponsor prize); sponsor prize
+**Best Use of AG Grid** (only condition: uses any AG Grid tools).
 
 ## Gaps / next actions
 
-- **G1 Demo video** — draft exists (`docs/demo_draft.mp4`). Scene 7 (Sandbox *personal* test account login → Pay → `COMPLETED`) still needs footage. The real flow was run and screenshotted on 2026-10-30 (`docs/screenshots/sandbox_e2e_*.png`, `docs/SANDBOX_E2E.md`). Use those stills, or re-record a ~20 s clip the same way. Then the user uploads to YouTube.
-- ~~G2 Agent without an API key~~ — done (iteration 3): `AGENT_MODE=offline`, rule-based, clearly labelled, 9 tests. Hosted demo (Render) remains optional.
-- **G3 Sandbox credentials for judges** (current choice: "create your own Sandbox app" instructions; nothing published). Rules ask for "sandbox login details necessary to run". Options: keep "create your own Sandbox app" instructions (safe; mock mode works without it), or publish a throwaway Sandbox app's client id/secret in the Devpost testing instructions (Sandbox only, no real money, but anyone can use it). Decision needed — do not commit secrets to the repo.
+- **G1 Demo video** — scene 7 (Sandbox personal account login → Pay → `COMPLETED`) needs footage; then the user uploads to YouTube (public) and pastes the link.
+- **G3 Sandbox credentials for judges** — decision needed: keep "create your own Sandbox app" (current, safe; mock mode works without it) or publish a throwaway Sandbox app's credentials in the Devpost testing instructions only. Never commit secrets.
 - **G4 Public GitHub repo + push** (user confirmation required), then check the licence shows in About.
-- **G5 Devpost text** — drafted in `docs/DEVPOST.md`; paste into the form at submission.
-- **G6 (nice to have)** webhooks, Render deploy.
+- **G5 Devpost text** — `docs/DEVPOST.md`; fill the two placeholders.
+- **G6 (nice to have)** webhooks, hosted demo (Render).

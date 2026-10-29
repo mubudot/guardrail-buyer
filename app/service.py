@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import json
 import os
 import secrets
@@ -451,13 +452,23 @@ class BuyerService:
         return hmac.new(self._state_secret(), f"cancel:{oid}".encode(), hashlib.sha256).hexdigest()[:32]
 
     def verify_cancel_state(self, oid: str, state: str | None) -> bool:
-        return bool(state) and hmac.compare_digest(self.cancel_state(oid), str(state))
+        s = str(state or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", s):  # also keeps compare_digest on ASCII input
+            return False
+        return hmac.compare_digest(self.cancel_state(oid), s)
 
     # ---- money-moving --------------------------------------------------
     # Provider order statuses that mean "created, the buyer has not approved yet".
     AWAITING_BUYER = ("CREATED", "SAVED", "PAYER_ACTION_REQUIRED")
 
-    def _create_at_provider(self, oid: str, gen: int | None = None) -> dict[str, Any]:
+    # On a create *replay* (the first attempt's outcome was unknown) only these HTTP
+    # statuses say the request itself is invalid, so the original attempt failed as well.
+    # Anything else (401/403 auth, 404, 409, 429, ...) says nothing about the original
+    # attempt: the order stays NEEDS_RECONCILIATION and keeps its reservation. A failed
+    # OAuth token request (no Orders call made at all) never counts as evidence either.
+    REPLAY_DEFINITIVE_STATUS = (400, 422)
+
+    def _create_at_provider(self, oid: str, gen: int | None = None, replay: bool = False) -> dict[str, Any]:
         """Call PayPal create_order for a reserved CREATING order owned at generation
         `gen`. Idempotent: the PayPal request id is our order id, so a replay returns the
         same PayPal order -- possibly already approved or COMPLETED (N2), which is
@@ -473,6 +484,10 @@ class BuyerService:
         except PayPalError as e:
             if e.ambiguous:
                 return self._uncertain(oid, ("CREATING",), f"create outcome unknown: {e}", gen)
+            if replay and (getattr(e, "source", "orders") != "orders"
+                           or e.status_code not in self.REPLAY_DEFINITIVE_STATUS):
+                return self._uncertain(oid, ("CREATING",), f"create replay refused, original outcome still "
+                                                         f"unknown: {e}", gen)
             if not self._transition(oid, ("CREATING",), "FAILED", release=True, expect_gen=gen,
                                     paypal_status=str(e)[:200]):
                 return self._superseded(oid)
@@ -532,7 +547,7 @@ class BuyerService:
                     return self._superseded(oid)
                 return {**self.store.get("orders", oid), "result": "NOT_APPROVED_YET", "error": str(e),
                         "paypal_issue": issue or None}
-            if e.ambiguous or unknown_before:
+            if e.ambiguous or unknown_before or issue == "ORDER_ALREADY_CAPTURED":
                 return self._after_uncertain_capture(oid, str(e), issue, g)
             if not self._transition(oid, ("CAPTURING",), "CAPTURE_FAILED", release=True, expect_gen=g,
                                     paypal_status=str(e)[:200]):
@@ -589,7 +604,7 @@ class BuyerService:
             g = self._transition(oid, from_statuses, "CREATING", expect_gen=gen)
             if g is None:
                 return self._superseded(oid)
-            out = self._create_at_provider(oid, g)
+            out = self._create_at_provider(oid, g, replay=True)
             return {**out, "result": out.get("result") or self._result(out)}
         try:
             live = self.paypal.get_order(o["paypal_order_id"])

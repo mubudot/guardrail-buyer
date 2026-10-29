@@ -62,9 +62,13 @@ natural-language request
    `cancel_url`; a request without it, or with a forged/other order's state, gets `403`. Orders being
    captured, captured, or of unknown outcome are left untouched.
 5. If PayPal's answer is ambiguous (HTTP 5xx, timeout/transport error, capture status `PENDING` or missing),
-   the order becomes `NEEDS_RECONCILIATION`, keeps its reservation, and the app asks PayPal for the order
-   status. Only a confirmed `COMPLETED` capture is recorded as `COMPLETED`.
-   `POST /orders/{id}/reconcile` re-checks later.
+   the order becomes `NEEDS_RECONCILIATION` and keeps its reservation. After a capture call that failed
+   ambiguously (5xx, timeout, or `ORDER_ALREADY_CAPTURED` that could not be read back) the app asks PayPal
+   for the order status once right away; an unknown create outcome or a capture reported `PENDING` waits
+   for `POST /orders/{id}/reconcile`. Only a confirmed `COMPLETED` capture is recorded as `COMPLETED`. A
+   reconcile that replays an unknown create and is refused for a reason that says nothing about the first
+   attempt (401/403/404/409/429 …, or a failed OAuth token request) keeps the order reserved; only a
+   `400`/`422` from the Orders API releases it.
 6. **Recovery is monotonic and exclusive.** Every status change bumps a persisted per-order generation
    (`op_gen`). A reconcile/capture result is applied only if the generation it started from is unchanged;
    a delayed, superseded provider read is rejected (`result: SUPERSEDED`). The one result accepted
@@ -126,7 +130,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 221 passed, 1 skipped (jsdom UI test)
+python -m pytest -q                                     # -> 255 passed, 1 skipped (jsdom UI test)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -207,7 +211,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `221 passed, 1 skipped` (no network, no API key needed).
+1. **Run the tests** — `python -m pytest -q` → see `255 passed, 1 skipped` (no network, no API key needed).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -327,7 +331,8 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 - [x] Claude tool-use agent wired to the guardrails
 - [x] Buyer-approval round trip (create → approve → return → capture), reservations, cancel / expiry — tested with the mock and a wire-format test of the Sandbox client
 - [x] Live run against the PayPal Sandbox: orders created, live status, capture-before-approval handled, cancel (`scripts/sandbox_smoke.py`)
-- [ ] Full buyer payment with a Sandbox personal account, recorded for the video
+- [x] Full buyer payment with a Sandbox personal test account, verified by hand ([`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md))
+- [ ] The same payment recorded as video footage for the demo video
 - [x] AG Grid dashboard for orders, approvals and spend, approver token
 - [x] AG Grid **Audit** tab: every guardrail decision with column filters, quick search, risk highlighting, CSV export and a detail panel (quote, rules evaluated, payment timeline)
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
@@ -361,8 +366,8 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
 - **Split-order aggregation is narrow.** Only orders for the same SKU from the same merchant within one
   agent request are aggregated. Different SKUs, or separate requests, are judged per order; the daily cap is
   the backstop.
-- **Reconciliation is on demand.** Ambiguous outcomes are checked once right away and then via
-  `POST /orders/{id}/reconcile` (or a capture/return retry); there is no webhook or background job yet. An
+- **Reconciliation is on demand.** An ambiguous capture is checked once right away; every ambiguous
+  outcome can be re-checked via `POST /orders/{id}/reconcile` (or a capture/return retry); there is no webhook or background job yet. An
   order whose capture outcome was ambiguous stays reserved (never cancellable or expirable) until PayPal
   reports it `COMPLETED`, declined or `VOIDED`; if PayPal no longer returns the order at all, resolve it by
   hand.
@@ -396,7 +401,9 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
 
 - **Claude (Anthropic)** — `claude-sonnet-5-5` is the runtime purchasing agent (tool use via the Messages API).
 - The optional `AGENT_MODE=offline` parser is plain hand-written rules, not a model.
+- **Piper TTS** (offline, open source; voice trained on LibriTTS-R, CC BY 4.0) generated the demo-video narration.
 - **Hark** (an AI agent, built on Claude) was used as a coding assistant to scaffold the backend, guardrail engine, tests and this README. All code was reviewed and tested by running the test suite and live agent calls.
+- **OpenAI Codex (CLI)** was used as an independent code reviewer; findings and fixes are logged in `docs/CODEX_REVIEW_*.md` and [`docs/REVIEW_LOG.md`](docs/REVIEW_LOG.md).
 
 ## License
 

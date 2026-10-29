@@ -131,7 +131,9 @@ def fallback_summary(transcript: list[dict[str, Any]]) -> str:
     for t in transcript:
         if t.get("role") != "tool" or t.get("name") not in ("create_order", "request_approval"):
             continue
-        out, inp = t.get("output") or {}, t.get("input") or {}
+        out, inp = t.get("output"), t.get("input")
+        out = out if isinstance(out, dict) else {}
+        inp = inp if isinstance(inp, dict) else {}
         what = f"{inp.get('quantity', 1)} x {inp.get('product_id')}"
         r = out.get("result")
         o = out.get("order") or {}
@@ -149,6 +151,8 @@ def fallback_summary(transcript: list[dict[str, Any]]) -> str:
                          f"budget stays reserved until it is reconciled with PayPal")
         elif r == "FAILED":
             lines.append(f"- {what}: PayPal order failed: {o.get('error') or o.get('paypal_status')}")
+        elif r is None and out.get("error"):
+            lines.append(f"- {what}: not ordered: {out['error']}")
     return "\n".join(lines)
 
 
@@ -160,6 +164,19 @@ def strip_intro(text: str) -> str:
 
 class LLMError(RuntimeError):
     pass
+
+
+def json_safe(obj: Any) -> Any:
+    """Replace non-finite floats (a model can emit 1e309 -> inf) by their string form, so the
+    tool input can be echoed in the transcript / HTTP response and sent back to the model
+    (strict JSON has no inf/nan). The tool then refuses the string (review 5 #2)."""
+    if isinstance(obj, float) and (obj != obj or obj in (float("inf"), float("-inf"))):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [json_safe(v) for v in obj]
+    return obj
 
 
 def anthropic_post(payload: dict[str, Any], base_url: str | None = None, timeout: float = 90.0) -> dict[str, Any]:
@@ -175,7 +192,12 @@ def anthropic_post(payload: dict[str, Any], base_url: str | None = None, timeout
     except httpx.TransportError as e:
         raise LLMError(f"Messages API transport error: {type(e).__name__}") from e
     if r.status_code != 200:
-        raise LLMError(f"Messages API HTTP {r.status_code}: {r.text[:300]}")
+        hint = ""
+        if r.status_code in (401, 403) and not key:
+            # judge without a key (review log R2): say how to proceed instead of a bare 401
+            hint = (" -- no ANTHROPIC_API_KEY is set: put your key in .env, or restart with "
+                    "AGENT_MODE=offline for the rule-based agent (no AI, no key)")
+        raise LLMError(f"Messages API HTTP {r.status_code}: {r.text[:300]}{hint}")
     return r.json()
 
 
@@ -202,23 +224,43 @@ class PurchasingAgent:
         self.post = post or anthropic_post
         self.max_turns, self.max_tokens = max_turns, max_tokens
 
+    @staticmethod
+    def _quantity(args: dict[str, Any]) -> int:
+        """Tool-call quantity, validated without coercion: True, 1.9, "2", 1e309 are refused
+        (review 5 #2). The service re-checks the 1..100 range."""
+        q = args.get("quantity", 1)
+        if isinstance(q, bool) or not isinstance(q, int):
+            raise ValueError(f"quantity must be a whole number between 1 and 100, got {q!r}"[:120])
+        return q
+
+    @staticmethod
+    def _product_id(args: dict[str, Any]) -> str:
+        pid = args.get("product_id")
+        if not isinstance(pid, str) or not pid:
+            raise ValueError("product_id must be a catalog id string")
+        return pid
+
     def _run_tool(self, name: str, args: dict[str, Any], request_id: str | None = None) -> dict[str, Any]:
         """Dispatch one tool call. `request_id` ties every order of one agent request
         together so split orders of the same SKU count as one purchase."""
         s = self.service
+        if not isinstance(args, dict):
+            return {"error": "tool input must be an object"}
         try:
             if name == "search_catalog":
                 return {"products": s.catalog.search(args.get("query", ""), args.get("category"), args.get("max_price"))}
             if name == "check_policy":
-                return s.check(args["product_id"], int(args.get("quantity", 1)), request_id=request_id)
+                return s.check(self._product_id(args), self._quantity(args), request_id=request_id)
             if name == "create_order":
-                return s.place_order(args["product_id"], int(args.get("quantity", 1)), request_id=request_id)
+                return s.place_order(self._product_id(args), self._quantity(args), request_id=request_id)
             if name == "request_approval":
-                return s.request_approval(args["product_id"], int(args.get("quantity", 1)),
-                                          str(args.get("justification", "")), request_id=request_id)
+                return s.request_approval(self._product_id(args), self._quantity(args),
+                                          str(args.get("justification", ""))[:2000], request_id=request_id)
             return {"error": f"unknown tool {name}"}
-        except (KeyError, ValueError, TypeError, PayPalError) as e:
-            return {"error": str(e)}
+        except (KeyError, ValueError, TypeError, OverflowError, PayPalError) as e:
+            return {"error": str(e)[:300]}
+        except Exception as e:  # never lose the partial result of earlier tool calls (review 5 #2)
+            return {"error": f"tool failed: {type(e).__name__}"}
 
     def run(self, request: str) -> AgentResult:
         messages: list[dict[str, Any]] = [{"role": "user", "content": request}]
@@ -239,7 +281,7 @@ class PurchasingAgent:
             u = resp.get("usage", {})
             res.usage["input_tokens"] += int(u.get("input_tokens", 0))
             res.usage["output_tokens"] += int(u.get("output_tokens", 0))
-            content = resp.get("content", [])
+            content = json_safe(resp.get("content", []))
             messages.append({"role": "assistant", "content": content})
             texts = [strip_intro(b["text"]) for b in content if b.get("type") == "text" and b.get("text")]
             texts = [t for t in texts if t.strip()]
@@ -259,5 +301,7 @@ class PurchasingAgent:
                                 "content": json.dumps(out, default=str)})
             messages.append({"role": "user", "content": results})
         res.stopped_reason = "max_turns"
-        res.final_text = res.final_text or "Stopped: too many steps without finishing."
+        done = fallback_summary(res.transcript)
+        res.final_text = "\n".join(x for x in (done, "- stopped: too many steps without finishing; "
+                                               "check Orders / Pending approvals before retrying") if x)
         return res

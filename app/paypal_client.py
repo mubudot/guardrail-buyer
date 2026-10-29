@@ -39,6 +39,7 @@ class PayPalError(RuntimeError):
                  ambiguous: bool | None = None) -> None:
         super().__init__(message)
         self.status_code, self.issue, self.debug_id = status_code, issue, debug_id
+        self.source = "orders"  # "oauth" when the token request failed (no Orders call was made)
         self.ambiguous = ambiguous if ambiguous is not None else bool(status_code and status_code >= 500)
 
     @classmethod
@@ -175,8 +176,11 @@ class SandboxPayPal(PayPalClient):
             return self._http.request(method, url, **kw)
         except httpx.TransportError as e:
             # OAuth never moves money, so its failure is definite; any order call is ambiguous.
-            raise PayPalError(f"{what} failed: transport error {type(e).__name__}",
-                              issue="TRANSPORT_ERROR", ambiguous=what != "OAuth") from e
+            err = PayPalError(f"{what} failed: transport error {type(e).__name__}",
+                              issue="TRANSPORT_ERROR", ambiguous=what != "OAuth")
+            if what == "OAuth":
+                err.source = "oauth"
+            raise err from e
 
     @staticmethod
     def _json(what: str, r: httpx.Response) -> dict[str, Any]:
@@ -196,10 +200,17 @@ class SandboxPayPal(PayPalClient):
         if r.status_code != 200:
             err = PayPalError.from_response("OAuth", r)
             err.ambiguous = False  # no order call was made
+            err.source = "oauth"
             raise err
-        body = r.json()
-        self._token = body["access_token"]
-        self._token_exp = time.time() + int(body.get("expires_in", 300))
+        try:
+            body = r.json()
+            token, ttl = body["access_token"], int(body.get("expires_in", 300))
+        except (ValueError, KeyError, TypeError) as e:  # unusable token response: no Orders call made
+            err = PayPalError("OAuth failed: unreadable token response", status_code=r.status_code,
+                              issue="BAD_RESPONSE", ambiguous=False)
+            err.source = "oauth"
+            raise err from e
+        self._token, self._token_exp = token, time.time() + ttl
         return self._token
 
     def _headers(self, idempotency_key: str | None = None) -> dict[str, str]:
@@ -254,7 +265,14 @@ class SandboxPayPal(PayPalClient):
         if r.status_code not in (200, 201):
             err = PayPalError.from_response("capture_order", r)
             if err.issue == "ORDER_ALREADY_CAPTURED":
-                body = self.get_order(order_id)["raw"]
+                # PayPal says the money already moved: if we cannot read the order back,
+                # the outcome is unknown (keep the reservation), never a definitive failure.
+                try:
+                    body = self.get_order(order_id)["raw"]
+                except PayPalError as ge:
+                    raise PayPalError(f"capture_order: ORDER_ALREADY_CAPTURED but verification failed: {ge}",
+                                      status_code=ge.status_code, issue="ORDER_ALREADY_CAPTURED",
+                                      debug_id=ge.debug_id, ambiguous=True) from ge
             else:
                 raise err
         else:

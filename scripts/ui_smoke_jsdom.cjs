@@ -10,6 +10,12 @@ const {JSDOM, VirtualConsole} = require("jsdom");
 const base = process.argv[2] || "http://127.0.0.1:8000";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
+// Poll instead of fixed sleeps: on a slow / loaded machine parsing the 1.6 MB AG Grid
+// bundle and the first refresh() can take several seconds (REVIEW_LOG R1).
+const waitFor = async (pred, ms = 30000) => {
+  for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(100)) { try { if (pred()) return true; } catch (e) {} }
+  return false;
+};
 
 (async () => {
   const errors = [];
@@ -32,12 +38,12 @@ const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
     },
   });
   const w = dom.window, d = w.document;
-  for (let i = 0; i < 60 && !(w.agGrid && d.querySelector("#audit .ag-root")); i++) await sleep(100);
+  await waitFor(() => w.agGrid && d.querySelector("#audit .ag-root"), 60000);
   if (!w.agGrid) fail("AG Grid bundle did not load");
-  await sleep(1500); // first refresh()
+  await waitFor(() => d.querySelectorAll("#orders .ag-center-cols-container .ag-row").length > 0); // first refresh()
   const auditRows = () => [...d.querySelectorAll("#audit .ag-center-cols-container .ag-row")];
   d.getElementById("tab-audit").click();
-  await sleep(800);
+  await waitFor(() => auditRows().length >= 3);
   if (d.getElementById("view-audit").hidden) fail("audit tab did not open");
   let rows = auditRows();
   console.log("audit rows rendered:", rows.length, "| count label:", d.getElementById("audit-count").textContent);
@@ -49,18 +55,20 @@ const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
   if (!d.querySelectorAll("#audit .ag-floating-filter").length) fail("floating column filters missing");
 
   const search = d.getElementById("audit-search");
+  const total = auditRows().length;
   search.value = "Shady"; search.dispatchEvent(new w.Event("input"));
-  await sleep(400);
   // jsdom has no layout, so column virtualisation hides most cells: read the filtered rows from the grid API
-  const grid = w.eval("auditGrid"), kept = [];
-  grid.forEachNodeAfterFilter((n) => kept.push(n.data.merchant));
+  const grid = w.eval("auditGrid");
+  const filtered = () => { const k = []; grid.forEachNodeAfterFilter((n) => k.push(n.data.merchant)); return k; };
+  await waitFor(() => filtered().length < total && auditRows().length === filtered().length, 10000);
+  const kept = filtered();
   console.log("quick filter 'Shady':", kept.length, "rows,", auditRows().length, "rendered, merchants:", [...new Set(kept)]);
   if (!kept.length || !kept.every((m) => m.includes("Shady")) || auditRows().length !== kept.length) fail("quick filter");
   search.value = ""; search.dispatchEvent(new w.Event("input"));
-  await sleep(300);
+  await waitFor(() => auditRows().length === total, 10000);
 
   d.getElementById("audit-csv").click();
-  await sleep(300);
+  await waitFor(() => w.__csvBlob, 10000);
   if (!w.__csvBlob) fail("CSV export produced nothing");
   const csv = await new Promise((res) => { const r = new w.FileReader(); r.onload = () => res(r.result);
                                           r.readAsText(w.__csvBlob); });
@@ -70,7 +78,7 @@ const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
 
   const first = auditRows().find((r) => r.classList.contains("risk-NEEDS_APPROVAL")) || auditRows()[0];
   first.querySelector(".ag-cell").dispatchEvent(new w.MouseEvent("click", {bubbles: true}));
-  for (let i = 0; i < 30 && !d.getElementById("detail-body").textContent.includes("Rules evaluated"); i++) await sleep(100);
+  await waitFor(() => d.getElementById("detail-body").textContent.includes("Rules evaluated"), 90000);
   const body = d.getElementById("detail-body").textContent;
   console.log("detail panel:", d.getElementById("audit-detail").hidden ? "hidden" : "open", "|", body.slice(0, 160).replace(/\s+/g, " "));
   for (const k of ["Quote", "Rules evaluated", "Payment timeline", "per_order_cap"]) if (!body.includes(k)) fail("detail missing " + k);
