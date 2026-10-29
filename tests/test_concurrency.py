@@ -69,10 +69,10 @@ def test_b1_reservation_exists_before_paypal_is_called(policy, catalog, clock):
     seen = {}
 
     class Spy(MockPayPal):
-        def create_order(self, amount, currency, description, reference_id, items=None):
+        def create_order(self, amount, currency, description, reference_id, items=None, cancel_query=None):
             seen["spent_during_create"] = str(svc.spent_today())
             seen["status_during_create"] = svc.store.get("orders", reference_id)["status"]
-            return super().create_order(amount, currency, description, reference_id, items)
+            return super().create_order(amount, currency, description, reference_id, items, cancel_query)
     svc = BuyerService(policy, catalog, Spy(require_payer_approval=True), ":memory:", clock=clock)
     svc.place_order("P-1001", 1)
     assert seen == {"spent_during_create": "12.99", "status_during_create": "CREATING"}
@@ -131,7 +131,8 @@ def test_b3_get_cancel_during_capture_does_not_erase_spend(policy, catalog, cloc
     t, out = _start_capture(svc, o["paypal_order_id"])
     assert svc.store.get("orders", o["id"])["status"] == "CAPTURING"
     # unauthenticated buyer-cancel redirect arrives mid-capture
-    j = c.get(f"/paypal/cancel?token={o['paypal_order_id']}&format=json").json()
+    st = svc.cancel_state(o["id"])  # the signed state PayPal echoes back in the cancel_url
+    j = c.get(f"/paypal/cancel?token={o['paypal_order_id']}&state={st}&format=json").json()
     assert j["result"] == "NOT_CANCELLABLE" and j["status"] == "CAPTURING"
     assert str(svc.spent_today()) == "49.00"
     svc.paypal.go.set()
@@ -140,7 +141,7 @@ def test_b3_get_cancel_during_capture_does_not_erase_spend(policy, catalog, cloc
     s = svc.spend_summary()
     assert (s["captured"], s["reserved"]) == ("49.00", "0.00")
     # cancelling a completed order is refused and changes nothing
-    assert c.get(f"/paypal/cancel?token={o['paypal_order_id']}&format=json").json()["result"] == "NOT_CANCELLABLE"
+    assert c.get(f"/paypal/cancel?token={o['paypal_order_id']}&state={st}&format=json").json()["result"] == "NOT_CANCELLABLE"
     assert c.post(f"/orders/{o['id']}/cancel", headers={"X-Approver-Token": "t"}).status_code == 409
     assert svc.spend_summary()["captured"] == "49.00"
 
@@ -172,8 +173,9 @@ def test_b3_concurrent_double_capture_single_capture(policy, catalog, clock):
 def test_b3_cancel_while_awaiting_still_works(policy, catalog, clock):
     svc = BuyerService(policy, catalog, MockPayPal(require_payer_approval=True), ":memory:", clock=clock)
     o = svc.place_order("P-1001", 1)["order"]
-    assert svc.cancel_payment(o["paypal_order_id"])["result"] == "CANCELLED"
-    assert svc.cancel_payment(o["paypal_order_id"])["result"] == "ALREADY_CANCELLED"
+    st = svc.cancel_state(o["id"])
+    assert svc.cancel_payment(o["paypal_order_id"], st)["result"] == "CANCELLED"
+    assert svc.cancel_payment(o["paypal_order_id"], st)["result"] == "ALREADY_CANCELLED"
     assert str(svc.spent_today()) == "0.00"
 
 

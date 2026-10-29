@@ -43,7 +43,7 @@ def test_capture_on_return_after_approval(payer_service):
 
 def test_cancel_releases_reservation(payer_service):
     o = payer_service.place_order("P-1002", 2)["order"]
-    assert payer_service.cancel_payment(o["paypal_order_id"])["status"] == "CANCELLED"
+    assert payer_service.cancel_payment(o["paypal_order_id"], payer_service.cancel_state(o["id"]))["status"] == "CANCELLED"
     assert str(payer_service.spent_today()) == "0.00"
     with pytest.raises(ValueError):
         payer_service.complete_payment(o["paypal_order_id"])
@@ -92,7 +92,10 @@ def test_http_round_trip_and_mock_checkout(payer_service):
     assert r.status_code == 200 and "GuardRail Buyer" in r.text  # landed on the dashboard
     assert payer_service.store.get("orders", o["id"])["status"] == "COMPLETED"
     o2 = payer_service.place_order("P-1001", 1)["order"]
-    j = c.get(f"/paypal/cancel?token={o2['paypal_order_id']}&format=json").json()
+    page2 = c.get(f"/paypal/mock-checkout?token={o2['paypal_order_id']}").text
+    assert f"state={payer_service.cancel_state(o2['id'])}" in page2  # mock checkout's cancel link is signed
+    j = c.get(f"/paypal/cancel?token={o2['paypal_order_id']}&state={payer_service.cancel_state(o2['id'])}"
+              "&format=json").json()
     assert j["status"] == "CANCELLED"
     assert c.get("/paypal/return?token=NOPE").status_code == 404
     assert c.get("/spend").json()["captured"] == "12.99"

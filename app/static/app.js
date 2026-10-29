@@ -153,7 +153,7 @@ $("ask").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKe
 (async () => {
   const h = await api("/health").catch(() => null);
   if (h) {
-    $("mode").textContent = `PayPal: ${h.paypal} · ${h.agent_mode === "offline" ? "OFFLINE rule-based agent (no AI)" : h.model}${h.approver_auth ? " · approver token on" : ""}`;
+    $("mode").textContent = `PayPal: ${h.paypal} · ${h.agent_mode === "offline" ? "OFFLINE rule-based agent (no AI)" : h.model}${h.approver_auth ? " · approver token on" : (h.approver_mode === "disabled" ? " · approvals disabled (no APPROVER_TOKEN)" : " · approvals OPEN (DEMO_MODE)")}`;
     if (h.agent_mode === "offline") $("mode").classList.add("offline");
   }
   const q = new URLSearchParams(location.search);

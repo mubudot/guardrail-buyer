@@ -194,7 +194,7 @@ def test_b5_material_term_change_refused(service, change):
 
 
 def test_b5_removed_product_and_api_409(service):
-    c = TestClient(create_app(service, agent=_NoAgent(), approver_token=""))
+    c = TestClient(create_app(service, agent=_NoAgent(), approver_token="", demo_mode=True))
     aid = service.request_approval("P-1003", 1, "keyboard")["approval_id"]
     del service.catalog.products["P-1003"]
     r = c.post(f"/approvals/{aid}/approve")
@@ -211,6 +211,33 @@ def test_b8_negated_or_conditional_requests_buy_nothing(service, text):
     res = OfflineAgent(service).run(text)
     assert res.stopped_reason == "offline_refused" and "Nothing was ordered" in res.final_text
     assert service.store.list("orders") == [] and service.store.list("approvals") == []
+
+
+# fix round 5 (CODEX_REVIEW_2 B8): positive-only grammar, no denylist
+@pytest.mark.parametrize("text", [
+    "Avoid buying USB-C cables", "Buy USB-C cables only when approved", "Buy -1 USB-C cables",
+    "buy 1.5 USB-C cables", "buy minus 2 cables", "Skip the USB-C cables", "maybe get a wireless mouse",
+    "purchase a keyboard when approved", "buy a mouse for when it is approved",
+    "buy a monitor for under $300", "buy a mouse as soon as the budget allows",
+    "Buy 2 USB-C cables and refuse the keyboard", "buy cables x2 later", "buy a mouse: urgent"])
+def test_b8_outside_positive_grammar_buys_nothing(service, text):
+    res = OfflineAgent(service).run(text)
+    assert res.stopped_reason == "offline_refused", res.final_text
+    assert "Nothing was ordered" in res.final_text and "Supported offline grammar" in res.final_text
+    assert service.store.list("orders") == [] and service.store.list("approvals") == []
+    assert [t for t in res.transcript if t["role"] == "tool"] == []  # no tool was even called
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Buy 2 USB-C charging cables for the new hire", [("P-1001", 2)]),
+    ("please order a wireless mouse", [("P-1002", 1)]),
+    ("we need 3 bags of coffee beans as a team treat", [("P-3001", 3)]),
+    ("get a dozen sticky notes, a 27-inch 4K monitor", [("P-2002", 12), ("P-1004", 1)]),
+])
+def test_b8_positive_grammar_accepted(service, text, expected):
+    agent = OfflineAgent(service)
+    assert agent.refusal(text) is None
+    assert [(l["product_id"], l["quantity"]) for l in agent.parse(text)] == expected
 
 
 @pytest.mark.parametrize("text", ["0 USB-C cables", "zero wireless mice"])

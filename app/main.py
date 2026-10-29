@@ -5,10 +5,14 @@ import hmac
 import html
 import logging
 import os
+import threading
+import time
+from collections import defaultdict, deque
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,7 +26,7 @@ from .agent import LLMError, PurchasingAgent  # noqa: E402
 from .offline_agent import OfflineAgent, make_agent  # noqa: E402
 from .guardrails import Policy  # noqa: E402
 from .paypal_client import MockPayPal, PayPalError, make_client  # noqa: E402
-from .service import BuyerService, Catalog  # noqa: E402
+from .service import BuyerService, Catalog, MockLockError  # noqa: E402
 
 log = logging.getLogger("guardrail")
 STATIC = ROOT / "app" / "static"
@@ -40,24 +44,76 @@ def build_service(db_path: str | None = None, paypal_mode: str | None = None) ->
                         db_path or os.environ.get("DB_PATH", str(ROOT / "guardrail.db")))
 
 
+def parse_rate_limit(value: str | None) -> tuple[int, float] | None:
+    """"N/SECONDS" (e.g. "20/60") -> (N, SECONDS); "0" or "off" disables."""
+    value = (value if value is not None else "20/60").strip().lower()
+    if value in ("", "0", "off", "none"):
+        return None
+    n, _, per = value.partition("/")
+    return int(n), float(per or 60)
+
+
+class RateLimiter:
+    """In-memory sliding-window limit per client IP (one process only; local-demo scope)."""
+
+    def __init__(self, limit: int, per_seconds: float, clock=time.monotonic):
+        self.limit, self.per, self.clock = limit, per_seconds, clock
+        self.hits: dict[str, deque] = defaultdict(deque)
+        self.lock = threading.Lock()
+
+    def check(self, key: str) -> float | None:
+        """None if allowed (and counted), else seconds until the next request is allowed."""
+        now = self.clock()
+        with self.lock:
+            q = self.hits[key]
+            while q and q[0] <= now - self.per:
+                q.popleft()
+            if len(q) >= self.limit:
+                return max(q[0] + self.per - now, 0.0)
+            q.append(now)
+            return None
+
+
 def create_app(service: BuyerService | None = None, agent: PurchasingAgent | None = None,
-               approver_token: str | None = None) -> FastAPI:
-    app = FastAPI(title="GuardRail Buyer", version="0.2.0",
+               approver_token: str | None = None, demo_mode: bool | None = None,
+               agent_rate_limit: tuple[int, float] | None | str = "env") -> FastAPI:
+    app = FastAPI(title="GuardRail Buyer", version="0.3.0",
                   description="AI purchasing agent with PayPal spend guardrails (Sandbox)")
     svc = service or build_service()
     app.state.service = svc
-    lost = svc.invalidate_lost_mock_orders()  # mock provider state is in-memory (B9)
+    # Mock mode is single-process (N3): take the exclusive DB lock first (fails fast if
+    # another process holds it), only then invalidate mock orders lost on restart (B9).
+    lost = svc.invalidate_lost_mock_orders()
     if lost:
         log.warning("mock PayPal state was reset: %d open mock order(s) marked MOCK_RESET", len(lost))
     app.state.agent = agent or make_agent(svc)
     token = approver_token if approver_token is not None else os.environ.get("APPROVER_TOKEN", "")
+    demo = demo_mode if demo_mode is not None else os.environ.get("DEMO_MODE") == "1"
     if not token:
-        log.warning("APPROVER_TOKEN not set: approve/reject endpoints are OPEN (dev mode)")
+        if demo:
+            log.warning("APPROVER_TOKEN empty and DEMO_MODE=1: approve/reject/cancel are OPEN (local demo only)")
+        else:
+            log.warning("APPROVER_TOKEN not set: approve/reject/cancel are REFUSED (503). "
+                        "Set APPROVER_TOKEN, or DEMO_MODE=1 for an open local demo.")
+    approver_mode = "token" if token else ("open-demo" if demo else "disabled")
+    limit = parse_rate_limit(os.environ.get("AGENT_RATE_LIMIT")) if agent_rate_limit == "env" else agent_rate_limit
+    limiter = RateLimiter(*limit) if limit else None
+
+    def rate_limited(request: Request):
+        if limiter is None:
+            return
+        wait = limiter.check(request.client.host if request.client else "unknown")
+        if wait is not None:
+            raise HTTPException(429, f"rate limit: at most {limiter.limit} agent requests per "
+                                     f"{limiter.per:g}s per client", headers={"Retry-After": str(int(wait) + 1)})
 
     def require_approver(x_approver_token: str | None = Header(default=None),
                          authorization: str | None = Header(default=None)):
         if not token:
-            return
+            if demo:
+                return
+            raise HTTPException(503, "APPROVER_TOKEN is not configured; approve/reject/cancel are disabled "
+                                     "(set APPROVER_TOKEN, or DEMO_MODE=1 for an open local demo)")
         given = x_approver_token or ""
         if not given and authorization and authorization.lower().startswith("bearer "):
             given = authorization[7:]
@@ -76,7 +132,9 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     def health():
         return {"ok": True, "paypal": svc.paypal.name, "model": app.state.agent.model,
                 "agent_mode": "offline" if isinstance(app.state.agent, OfflineAgent) else "claude",
-                "approver_auth": bool(token)}
+                "approver_auth": bool(token), "approver_mode": approver_mode,
+                "agent_rate_limit": f"{limiter.limit}/{limiter.per:g}s" if limiter else None,
+                "instance": os.environ.get("GRB_INSTANCE")}
 
     @app.get("/policy")
     def get_policy():
@@ -90,7 +148,7 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     def get_catalog(q: str = "", category: str | None = None):
         return svc.catalog.search(q, category, limit=100)
 
-    @app.post("/agent/request")
+    @app.post("/agent/request", dependencies=[Depends(rate_limited)])
     def agent_request(body: AgentRequest):
         try:
             return app.state.agent.run(body.request).to_dict()
@@ -190,14 +248,18 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
         return RedirectResponse(f"/?paid={order['id']}&status={order['status']}", status_code=303)
 
     @app.get("/paypal/cancel")
-    def paypal_cancel(token: str, format: str = "html"):
-        """PayPal's cancel redirect. Only an order still awaiting payer approval is
-        cancelled (atomically); an order being captured, captured, or of unknown outcome
-        is left untouched, so this unauthenticated GET can never erase recorded spend."""
+    def paypal_cancel(token: str, state: str = "", format: str = "html"):
+        """PayPal's cancel redirect. Requires the signed `state` (HMAC with the server
+        secret) that was put into this order's cancel_url when it was created; the public
+        PayPal order id alone is refused (403). Only an order still awaiting payer
+        approval is cancelled (atomically); an order being captured, captured, or of
+        unknown outcome is left untouched."""
         try:
-            order = svc.cancel_payment(token)
+            order = svc.cancel_payment(token, state)
         except KeyError:
             raise HTTPException(404, "unknown PayPal order")
+        except PermissionError:
+            raise HTTPException(403, "missing or invalid signed cancel state")
         if format == "json":
             return order
         if order["result"] in ("CANCELLED", "ALREADY_CANCELLED"):
@@ -215,12 +277,14 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
             raise HTTPException(404, "unknown mock order (mock PayPal state is in-memory and is "
                                      "reset when the server restarts; place a new order)")
         t = html.escape(token)
+        cancel_q = html.escape(o.get("cancel_query") or "")
+        cancel_href = f"/paypal/cancel?token={t}" + (f"&amp;{cancel_q}" if cancel_q else "")
         return f"""<!doctype html><html><head><meta charset="utf-8"><title>Mock PayPal checkout</title>
 <link rel="stylesheet" href="/static/app.css"></head><body class="checkout">
 <div class="card"><div class="brand">Mock checkout <span>stands in for the PayPal approval page</span></div>
 <p>{html.escape(o['description'])}</p><p class="amount">{html.escape(o['amount'])} {html.escape(o['currency'])}</p>
 <a class="btn primary" href="/paypal/mock-approve?token={t}">Pay now</a>
-<a class="btn" href="/paypal/cancel?token={t}">Cancel and return</a></div></body></html>"""
+<a class="btn" href="{cancel_href}">Cancel and return</a></div></body></html>"""
 
     @app.get("/paypal/mock-approve", include_in_schema=False)
     def mock_approve(token: str):
@@ -230,11 +294,14 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
             svc.paypal.approve(token)
         except PayPalError:
             raise HTTPException(404, "unknown mock order")
-        return RedirectResponse(f"/paypal/return?token={token}&PayerID=MOCKPAYER", status_code=303)
+        return RedirectResponse(f"/paypal/return?token={quote(token)}&PayerID=MOCKPAYER", status_code=303)
 
     return app
 
 
 app = None
 if os.environ.get("GRB_NO_AUTOAPP") != "1":
-    app = create_app()
+    try:
+        app = create_app()
+    except MockLockError as e:  # second mock-mode process on the same DB: fail fast
+        raise SystemExit(f"ERROR: {e}") from None

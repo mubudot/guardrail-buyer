@@ -62,8 +62,10 @@ class PayPalClient(ABC):
 
     @abstractmethod
     def create_order(self, amount: Decimal, currency: str, description: str,
-                     reference_id: str, items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        """Create an order. Returns {'id', 'status', 'approve_url'?, 'raw'}."""
+                     reference_id: str, items: list[dict[str, Any]] | None = None,
+                     cancel_query: str | None = None) -> dict[str, Any]:
+        """Create an order. Returns {'id', 'status', 'approve_url'?, 'raw'}.
+        `cancel_query` (e.g. "state=<hmac>") is appended to this order's cancel_url."""
 
     @abstractmethod
     def capture_order(self, order_id: str) -> dict[str, Any]:
@@ -93,7 +95,7 @@ class MockPayPal(PayPalClient):
     def known(self, order_id: str) -> bool:
         return order_id in self.orders
 
-    def create_order(self, amount, currency, description, reference_id, items=None):
+    def create_order(self, amount, currency, description, reference_id, items=None, cancel_query=None):
         # Idempotent on reference_id, like PayPal-Request-Id on the real API.
         for o in self.orders.values():
             if o["reference_id"] == reference_id:
@@ -105,6 +107,7 @@ class MockPayPal(PayPalClient):
         self.orders[oid] = {
             "id": oid, "status": status, "amount": str(amount), "currency": currency,
             "description": description, "reference_id": reference_id, "items": items or [],
+            "cancel_query": cancel_query or "",
         }
         approve = f"{self.checkout_base}/paypal/mock-checkout?token={oid}" if self.require_payer_approval else None
         return {"id": oid, "status": status, "approve_url": approve, "raw": dict(self.orders[oid])}
@@ -208,7 +211,10 @@ class SandboxPayPal(PayPalClient):
             h["PayPal-Request-Id"] = idempotency_key
         return h
 
-    def create_order(self, amount, currency, description, reference_id, items=None):
+    def create_order(self, amount, currency, description, reference_id, items=None, cancel_query=None):
+        cancel_url = self.cancel_url
+        if cancel_query:
+            cancel_url += ("&" if "?" in cancel_url else "?") + cancel_query
         payload = {
             "intent": "CAPTURE",
             "purchase_units": [{
@@ -217,7 +223,7 @@ class SandboxPayPal(PayPalClient):
                 "amount": {"currency_code": currency, "value": f"{Decimal(amount):.2f}"},
             }],
             "payment_source": {"paypal": {"experience_context": {
-                "return_url": self.return_url, "cancel_url": self.cancel_url,
+                "return_url": self.return_url, "cancel_url": cancel_url,
                 "user_action": "PAY_NOW"}}},
         }
         r = self._send("create_order", "POST", f"{self.base_url}/v2/checkout/orders", json=payload,

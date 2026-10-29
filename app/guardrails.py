@@ -158,9 +158,12 @@ def evaluate(policy: Policy, order: OrderRequest, spent_today: Decimal = Decimal
     return Decision(Verdict.ALLOW, (f"within caps: {amount} <= {policy.per_order_cap}, today {spent + amount} <= {policy.daily_cap}",))
 
 
-def hard_rules_only(policy: Policy, order: OrderRequest) -> Decision:
-    """Used when a human approves: caps are waived, deny-rules still apply."""
-    d = evaluate(policy, order, Decimal("0"))
+def hard_rules_only(policy: Policy, order: OrderRequest,
+                    related_prior: Decimal = Decimal("0")) -> Decision:
+    """Used when a human approves: the soft caps (per-order cap, daily cap) are waived;
+    every deny rule still applies, including the aggregate hard maximum over
+    `related_prior` (same SKU/merchant already ordered in the same agent request)."""
+    d = evaluate(policy, order, Decimal("0"), related_prior)
     if d.verdict == Verdict.DENY:
         return d
     return Decision(Verdict.ALLOW, ("approved by human; deny-rules re-checked",))

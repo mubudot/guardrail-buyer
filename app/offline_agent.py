@@ -38,13 +38,51 @@ SYNONYMS = {
 STOP = {"the", "of", "for", "and", "with", "our", "new", "box", "pack", "bag", "bags", "buy",
         "order", "get", "please", "some", "team", "sandbox", "co", "inch", "2m", "1kg", "x"}
 SPLIT_RE = re.compile(r",|;|\n|\band also\b|\balso\b|\bplus\b|\bas well as\b|\band\b|&", re.I)
-# Restricted grammar: the offline parser only understands positive shopping lists.
-# Anything negated or conditional is refused as a whole (never partially executed),
-# because clause splitting could otherwise drop the negation ("don't buy X and Y").
-NEGATION_RE = re.compile(
-    r"\b(?:don['’]?t|do\s+not|doesn['’]?t|does\s+not|didn['’]?t|no|not|never|none|nothing|without|"
-    r"except|cancel|stop|unless|if|instead\s+of)\b", re.I)
 QTY_RE = re.compile(r"(?<![\$\d.])\b(\d{1,3})\b(?!\s*(?:-?\s*inch|%|kg|g\b|m\b|sheets|\.\d))", re.I)
+
+# ---- positive-only grammar (B8) ------------------------------------------------
+# The offline parser accepts ONLY requests built from this grammar; anything else is
+# refused as a whole (never partially executed):
+#
+#   request  := clause ( ("," | ";" | "and" | "plus" | "also" | "&" | newline) clause )*
+#   clause   := [filler] [verb] [quantity] item [purpose] [filler]
+#   verb     := buy | get | order | purchase | need | grab   (optionally "i/we need", "me/us")
+#   quantity := non-negative whole number | a | an | one … ten | single | pair | couple | dozen
+#               (optionally "a dozen", "a pair of", …)
+#   item     := words from the catalog vocabulary (product-name words, synonyms, sizes such
+#               as 27-inch / 4k / 2m / 1kg, prices such as $100, and packaging words)
+#   purpose  := ("for" | "as") up to 8 plain words, none of them a condition/negation word
+#   filler   := please
+#
+# There is no denylist for the executed part: an unknown verb ("avoid"), a condition
+# ("only when approved"), a negative or fractional number ("-1", "1.5") or any word
+# outside the catalog vocabulary makes the clause ungrammatical, so nothing is bought.
+GRAMMAR_HELP = (
+    "Supported offline grammar: [buy|get|order|purchase|need] <quantity> <catalog item> "
+    "[for/as <short purpose>], clauses joined by commas, \"and\", \"plus\" or \";\". "
+    "<quantity> is a non-negative whole number or a/an/one…ten/pair/couple/dozen. "
+    "Example: \"Buy 2 USB-C cables and a wireless mouse for the new hire\". "
+    "Anything else (negation such as \"avoid\"/\"don't\", conditions such as \"only when\"/\"if\", "
+    "negative or fractional numbers, unknown verbs or words) is refused as a whole.")
+VERBS = {"buy", "get", "order", "purchase", "need", "grab"}
+VERB_FILLERS = {"please", "pls", "kindly", "i", "we", "me", "us"}
+QTY_WORDS = set(NUMBER_WORDS) | {"of"}
+PURPOSE_MARKERS = {"for", "as"}
+# Words that would turn a purpose label into a condition / negation. Only checked in the
+# short free-text purpose tail, which is never executed (it is only a label).
+PURPOSE_FORBIDDEN = {
+    "if", "unless", "only", "when", "whenever", "until", "after", "before", "once", "provided",
+    "approved", "approve", "approval", "not", "no", "never", "dont", "don't", "doesnt", "without",
+    "except", "cancel", "stop", "avoid", "instead", "later", "maybe", "unless", "then", "while",
+    "budget", "cheap", "cheaper", "under", "over", "below", "above", "less", "more", "than"}
+SIGNED_OR_FRACTION_RE = re.compile(r"(?:^|[\s(,;:])[-−–+]\s*\d|\bminus\b|\bnegative\b|(?<![\$\d.])\d+[.,]\d+(?!\s*(?:kg|m\b))",
+                                   re.I)
+UNIT_TOKEN_RE = re.compile(r"^\d{1,4}(?:inch|in|k|m|kg|g|gb|tb|pack|sheets?)$", re.I)
+PRICE_TOKEN_RE = re.compile(r"^\$\d{1,6}(?:\.\d{2})?$")
+
+
+class GrammarError(ValueError):
+    """The request is outside the supported offline grammar."""
 
 
 def _norm(word: str) -> str:
@@ -76,18 +114,98 @@ class OfflineAgent:
                     self._index[pid]["words"].add(_norm(word))
 
     # ---- parsing -------------------------------------------------------
+    def _vocab(self) -> set[str]:
+        if not hasattr(self, "_vocab_cache"):
+            v = set()
+            for entry in self._index.values():
+                v |= entry["words"]
+            v |= {_norm(w) for w in STOP} | {"a", "an", "the", "c", "post", "it", "card", "tool",
+                                              "piece", "unit", "set", "pc", "pcs", "item"}
+            self._vocab_cache = v - {""}
+        return self._vocab_cache
+
+    def validate_clause(self, clause: str) -> str:
+        """Check one clause against the grammar. Returns the item phrase (verb, quantity
+        and purpose removed); raises GrammarError otherwise."""
+        toks = [t for t in re.split(r"\s+", clause.strip()) if t]
+        low = [t.lower().strip(".!?") for t in toks]
+        i = 0
+        while i < len(low) and low[i] in VERB_FILLERS:
+            i += 1
+        if i < len(low) and low[i] in VERBS:
+            i += 1
+            while i < len(low) and low[i] in VERB_FILLERS:
+                i += 1
+        # quantity: digits or number words (e.g. "2", "a", "a dozen", "a pair of")
+        q_start = i
+        if i < len(low) and re.fullmatch(r"\d{1,3}", low[i]):
+            i += 1
+        else:
+            while i < len(low) and low[i] in QTY_WORDS and i - q_start < 3:
+                i += 1
+        # item until a purpose marker
+        j = i
+        while j < len(low) and low[j] not in PURPOSE_MARKERS:
+            j += 1
+        item_toks, purpose = low[i:j], low[j + 1:]
+        while item_toks and item_toks[-1] == "please":
+            item_toks.pop()
+        if not item_toks:
+            raise GrammarError(f"\"{clause}\": no catalog item after the verb/quantity")
+        vocab, unknown = self._vocab(), []
+        for t in item_toks:
+            if PRICE_TOKEN_RE.match(t):
+                continue
+            for part in re.split(r"[\-/()]+", t):
+                part = part.strip(".!?'\"")
+                if not part or PRICE_TOKEN_RE.match(part) or UNIT_TOKEN_RE.match(part):
+                    continue
+                if part.isdigit() and t != part and re.search(r"\d+-(?:inch|in)\b", t):
+                    continue  # "27-inch"
+                if _norm(part) not in vocab:
+                    unknown.append(part)
+        if unknown:
+            raise GrammarError(f"\"{clause}\": unsupported word(s) " +
+                               ", ".join(f"\"{u}\"" for u in dict.fromkeys(unknown)))
+        if j < len(low):  # purpose tail
+            words = [w for w in purpose if w != "please"]
+            bad = [w for w in words if not re.fullmatch(r"[a-z']+", w) or w.replace("’", "'") in PURPOSE_FORBIDDEN]
+            if not words or len(words) > 8 or bad:
+                raise GrammarError(f"\"{clause}\": the \"{low[j]} …\" part must be a short plain purpose "
+                                   f"(no conditions, negation or numbers)" +
+                                   (f"; not allowed: {', '.join(bad)}" if bad else ""))
+        return " ".join(toks[i:j])
+
+    def validate(self, request: str) -> None:
+        """Raise GrammarError unless every clause of the request is in the grammar."""
+        m = SIGNED_OR_FRACTION_RE.search(request)
+        if m:
+            raise GrammarError(f"negative or fractional quantity \"{m.group(0).strip()}\"")
+        if re.search(r"[^\w\s,;.!?&$'’\-/()\n]", request):
+            ch = re.search(r"[^\w\s,;.!?&$'’\-/()\n]", request).group(0)
+            raise GrammarError(f"unsupported character \"{ch}\"")
+        clauses = [c.strip(" .!?") for c in SPLIT_RE.split(request)]
+        clauses = [c for c in clauses if c]
+        if not clauses:
+            raise GrammarError("empty request")
+        for c in clauses:
+            self.validate_clause(c)
+
     def parse(self, request: str) -> list[dict[str, Any]]:
-        """Split a request into (product_id, quantity, clause) lines. Unmatched clauses get product_id None."""
+        """Split a (grammar-checked) request into (product_id, quantity, clause) lines.
+        Clauses whose item words match no product get product_id None."""
         lines = []
         for clause in SPLIT_RE.split(request):
             clause = clause.strip(" .!?")
             if not clause:
                 continue
-            pid = self._match(clause)
+            try:
+                item = self.validate_clause(clause)
+            except GrammarError:
+                item = clause
+            pid = self._match(item)
             if pid is None:
-                # only report clauses that look like an item, not filler like "for our new hire"
-                if re.search(r"\b(\d+|an?|one|two|three|some)\b", clause, re.I) and not re.match(r"^(for|to)\b", clause, re.I):
-                    lines.append({"product_id": None, "quantity": 0, "clause": clause})
+                lines.append({"product_id": None, "quantity": 0, "clause": clause})
                 continue
             lines.append({"product_id": pid, "quantity": self._quantity(clause), "clause": clause})
         return lines
@@ -127,15 +245,13 @@ class OfflineAgent:
         res.transcript.append({"role": "tool", "name": name, "input": args, "output": out})
         return out
 
-    @staticmethod
-    def refusal(request: str) -> str | None:
-        """Why the whole request is refused (negated / conditional language), or None."""
-        m = NEGATION_RE.search(request)
-        if m:
-            return (f"- Offline mode refused the whole request: it contains \"{m.group(0)}\". "
-                    "The rule-based parser only handles positive shopping lists "
-                    "(e.g. \"2 USB-C cables and a wireless mouse\"); negated or conditional "
-                    "requests are never executed. Nothing was ordered.")
+    def refusal(self, request: str) -> str | None:
+        """Why the whole request is refused (outside the positive-only grammar), or None."""
+        try:
+            self.validate(request)
+        except GrammarError as e:
+            return (f"- Offline mode refused the whole request: {e}. {GRAMMAR_HELP} "
+                    "Nothing was ordered.")
         return None
 
     def run(self, request: str) -> AgentResult:

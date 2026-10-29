@@ -62,7 +62,7 @@ reserved, headroom).
   grid with PayPal links, spend-vs-caps grid).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 110 pytest tests (guardrails, payment flow, reservations/expiry, API, agent loop with a
+- **Tests:** 148 pytest tests (guardrails, payment flow, reservations/expiry, API, agent loop with a
   scripted fake LLM, offline mode, and thread/barrier concurrency tests for budget races, double
   approvals and cancel-vs-capture) plus a live Sandbox smoke script.
 
@@ -95,11 +95,12 @@ reserved, headroom).
   DENY, cannot reuse an approval or change its amount, and cannot get around the caps by firing
   requests in parallel or by splitting one item into several orders within a request.
 
-**Known limitations (honest scope):** authentication is local-demo scope (one shared approver token, no
-per-requester identity or rate limits, so don't expose it publicly); catalog merchants are labels and all
+**Known limitations (honest scope):** authentication is local-demo scope (one shared approver token that
+fails closed when unset, a signed cancel callback and a simple per-IP agent rate limit, but no
+per-requester identity or ownership, so don't expose it publicly); catalog merchants are labels and all
 payments go to the single Sandbox merchant of the configured app; spend counts on the day it was reserved;
 policy changes don't revoke orders already created; split-order aggregation covers only the same item
-from the same merchant within one request; mock PayPal state is in memory. Details in the README.
+from the same merchant within one request; mock PayPal state is in memory (one mock server per database, enforced by a lock file). Details in the README.
 - Judges can run everything locally in a few minutes, with or without an AI key and with or without a
   PayPal Sandbox app (a local mock covers the PayPal side).
 
@@ -146,7 +147,7 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 110 passed, no network
+python -m pytest -q                      # 148 passed, no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card

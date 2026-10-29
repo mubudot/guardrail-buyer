@@ -15,12 +15,22 @@ methods via tools. Safety properties enforced here (see tests/test_concurrency.p
   merchant, category); a changed quote needs a fresh approval;
 * ambiguous PayPal outcomes keep the reservation (NEEDS_RECONCILIATION) and are
   resolved from the provider's order status; only a confirmed COMPLETED capture
-  counts as COMPLETED.
+  counts as COMPLETED;
+* recovery is monotonic and exclusive (fix round 5): every status change bumps a
+  persisted per-order generation (orders.op_gen). Reconcile/capture results are
+  applied only if the generation they started from is unchanged (a superseded read
+  is rejected, result=SUPERSEDED); the only result accepted regardless is a confirmed
+  COMPLETED capture, which is final. Once a capture outcome was ambiguous
+  (orders.capture_unknown=1) the order never returns to PAYER_ACTION_REQUIRED and can
+  never be cancelled or expired, only resolved from the provider.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sqlite3
 import threading
 import uuid
@@ -34,6 +44,10 @@ from zoneinfo import ZoneInfo
 from .guardrails import (Decision, OrderRequest, Policy, SpendLedger, Verdict,
                          evaluate, hard_rules_only, money)
 from .paypal_client import MockPayPal, PayPalClient, PayPalError
+
+
+class MockLockError(RuntimeError):
+    """Another process already serves this database in mock mode."""
 
 
 class Catalog:
@@ -72,6 +86,7 @@ class Store:
 
     def __init__(self, db_path: str = ":memory:"):
         self.lock = threading.RLock()
+        self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         if db_path != ":memory:":
@@ -98,6 +113,12 @@ class Store:
             for col in wanted:
                 if col not in cols:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+        # fix round 5: operation generation + "a capture may have happened" flag
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(orders)")}
+        for col in ("op_gen", "capture_unknown"):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE orders ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+        self.conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS orders_paypal ON orders(paypal_order_id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS orders_req ON orders(request_id, product_id)")
         try:  # one order per approval (B2). Old DBs that already hold duplicates keep working.
@@ -247,20 +268,33 @@ class BuyerService:
 
     # ---- atomic state changes -----------------------------------------
     def _transition(self, oid: str, from_statuses: tuple[str, ...], to: str, release: bool = False,
-                    **fields: Any) -> bool:
-        """Compare-and-set the order status. Releases the reservation in the same
-        transaction when `release`. Returns False (and changes nothing) if the order is
-        no longer in one of `from_statuses`."""
+                    expect_gen: int | None = None, extra_where: str = "", **fields: Any) -> int | None:
+        """Compare-and-set the order status and bump its operation generation.
+        Releases the reservation in the same transaction when `release`. With
+        `expect_gen` the update applies only if no other operation changed the order
+        since that generation was read. Returns the new generation (>= 1), or None (and
+        changes nothing) if the order is no longer in one of `from_statuses` / the
+        generation moved on."""
         sets = {"status": to, "updated_at": self._ts(), **fields}
         qs = ",".join("?" for _ in from_statuses)
+        where, args = f"id=? AND status IN ({qs})", [oid, *from_statuses]
+        if expect_gen is not None:
+            where, args = where + " AND op_gen=?", [*args, expect_gen]
+        if extra_where:
+            where += f" AND ({extra_where})"
         with self.store.tx() as c:
-            cur = c.execute(f"UPDATE orders SET {','.join(f'{k}=?' for k in sets)} "
-                            f"WHERE id=? AND status IN ({qs})", [*sets.values(), oid, *from_statuses])
+            cur = c.execute(f"UPDATE orders SET {','.join(f'{k}=?' for k in sets)}, op_gen=op_gen+1 "
+                            f"WHERE {where}", [*sets.values(), *args])
             if cur.rowcount != 1:
-                return False
+                return None
             if release:
                 c.execute("DELETE FROM spend WHERE order_ref=?", (oid,))
-            return True
+            return int(c.execute("SELECT op_gen FROM orders WHERE id=?", (oid,)).fetchone()[0])
+
+    def _superseded(self, oid: str, note: str = "") -> dict[str, Any]:
+        """A result that arrived for an older generation of the order: not applied."""
+        return {**self.store.get("orders", oid), "result": "SUPERSEDED",
+                "note": note or "a newer operation changed this order first; this result was not applied"}
 
     def _reserve(self, p: dict[str, Any], req: OrderRequest, quantity: int, decision: Decision,
                  approval_id: str | None = None, request_id: str | None = None) -> str:
@@ -273,112 +307,195 @@ class BuyerService:
             "currency": req.currency, "status": "CREATING", "paypal_order_id": None,
             "paypal_status": None, "capture_id": None, "approval_id": approval_id,
             "decision": json.dumps(decision.to_dict()), "created_at": now,
-            "approve_url": None, "updated_at": now, "request_id": request_id})
+            "approve_url": None, "updated_at": now, "request_id": request_id,
+            "op_gen": 1, "capture_unknown": 0})
         self.ledger.record(self._today(), req.amount, req.currency, oid)
         return oid
 
+    # ---- signed cancel state (B3) ----------------------------------------
+    def _state_secret(self) -> bytes:
+        env = os.environ.get("STATE_SECRET")
+        if env:
+            return env.encode()
+        if getattr(self, "_secret", None) is None:
+            with self.store.tx() as c:  # one secret per database, shared by all processes
+                c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('state_secret', ?)",
+                          (secrets.token_hex(32),))
+                self._secret = c.execute("SELECT value FROM meta WHERE key='state_secret'").fetchone()[0].encode()
+        return self._secret
+
+    def cancel_state(self, oid: str) -> str:
+        """HMAC over our order id, put into the PayPal cancel_url when the order is created.
+        GET /paypal/cancel must present it; the public PayPal order id alone is not enough."""
+        return hmac.new(self._state_secret(), f"cancel:{oid}".encode(), hashlib.sha256).hexdigest()[:32]
+
+    def verify_cancel_state(self, oid: str, state: str | None) -> bool:
+        return bool(state) and hmac.compare_digest(self.cancel_state(oid), str(state))
+
     # ---- money-moving --------------------------------------------------
-    def _create_at_provider(self, oid: str) -> dict[str, Any]:
-        """Call PayPal create_order for a reserved CREATING order. Idempotent: the PayPal
-        request id is our order id, so a replay returns the same PayPal order."""
+    # Provider order statuses that mean "created, the buyer has not approved yet".
+    AWAITING_BUYER = ("CREATED", "SAVED", "PAYER_ACTION_REQUIRED")
+
+    def _create_at_provider(self, oid: str, gen: int | None = None) -> dict[str, Any]:
+        """Call PayPal create_order for a reserved CREATING order owned at generation
+        `gen`. Idempotent: the PayPal request id is our order id, so a replay returns the
+        same PayPal order -- possibly already approved or COMPLETED (N2), which is
+        verified as a capture instead of being exposed as cancellable."""
         o = self.store.get("orders", oid)
+        if gen is None:
+            gen = int(o["op_gen"])
         try:
             created = self.paypal.create_order(money(o["amount"]), o["currency"],
                                                f"{o['quantity']} x {o['product_name']}", oid,
-                                               items=[{"sku": o["product_id"], "quantity": o["quantity"]}])
+                                               items=[{"sku": o["product_id"], "quantity": o["quantity"]}],
+                                               cancel_query=f"state={self.cancel_state(oid)}")
         except PayPalError as e:
             if e.ambiguous:
-                return self._uncertain(oid, ("CREATING",), f"create outcome unknown: {e}")
-            self._transition(oid, ("CREATING",), "FAILED", release=True, paypal_status=str(e)[:200])
+                return self._uncertain(oid, ("CREATING",), f"create outcome unknown: {e}", gen)
+            if not self._transition(oid, ("CREATING",), "FAILED", release=True, expect_gen=gen,
+                                    paypal_status=str(e)[:200]):
+                return self._superseded(oid)
             return {**self.store.get("orders", oid), "error": str(e)}
         except Exception as e:  # unexpected: treat as unknown outcome, keep the reservation
-            return self._uncertain(oid, ("CREATING",), f"create outcome unknown: {type(e).__name__}: {e}")
-        self._transition(oid, ("CREATING",), "PAYER_ACTION_REQUIRED", paypal_order_id=created["id"],
-                         paypal_status=created["status"], approve_url=created.get("approve_url"))
-        if created["status"] == "APPROVED":  # mock auto-approve
-            return self._capture(oid)
-        return self.store.get("orders", oid)
+            return self._uncertain(oid, ("CREATING",), f"create outcome unknown: {type(e).__name__}: {e}", gen)
+        st = created.get("status")
+        ids = {"paypal_order_id": created["id"], "approve_url": created.get("approve_url")}
+        if st in self.AWAITING_BUYER or st == "APPROVED":
+            g = self._transition(oid, ("CREATING",), "PAYER_ACTION_REQUIRED", expect_gen=gen,
+                                 paypal_status=st, **ids)
+            if g is None:
+                return self._superseded(oid)
+            if st == "APPROVED":  # mock auto-approve, or a replay after the buyer approved
+                return self._capture(oid, ("PAYER_ACTION_REQUIRED",), expect_gen=g)
+            return self.store.get("orders", oid)
+        # COMPLETED (or anything unexpected) on a create/replay: money may already have
+        # moved. Never expose it as PAYER_ACTION_REQUIRED; verify with the provider.
+        g = self._transition(oid, ("CREATING",), "NEEDS_RECONCILIATION", expect_gen=gen, capture_unknown=1,
+                             paypal_status=f"create returned {st}; verifying capture"[:200], **ids)
+        if g is None:
+            return self._superseded(oid)
+        return self._reconcile_once(oid, ("NEEDS_RECONCILIATION",), allow_capture=False, gen=g)
 
-    def _uncertain(self, oid: str, from_statuses: tuple[str, ...], msg: str) -> dict[str, Any]:
-        self._transition(oid, from_statuses, "NEEDS_RECONCILIATION", paypal_status=msg[:200])
+    def _uncertain(self, oid: str, from_statuses: tuple[str, ...], msg: str,
+                   gen: int | None = None) -> dict[str, Any]:
+        if not self._transition(oid, from_statuses, "NEEDS_RECONCILIATION", expect_gen=gen,
+                                paypal_status=msg[:200]):
+            return {**self._superseded(oid), "error": msg}
         return {**self.store.get("orders", oid), "error": msg}
 
     # PayPal issues that mean "the buyer has not approved yet": not fatal, keep the order open.
     NOT_YET_APPROVED = ("ORDER_NOT_APPROVED", "PAYER_ACTION_REQUIRED")
 
-    def _capture(self, oid: str, from_statuses: tuple[str, ...] = ("PAYER_ACTION_REQUIRED",)) -> dict[str, Any]:
-        if not self._transition(oid, from_statuses, "CAPTURING"):
+    def _capture(self, oid: str, from_statuses: tuple[str, ...] = ("PAYER_ACTION_REQUIRED",),
+                 expect_gen: int | None = None) -> dict[str, Any]:
+        g = self._transition(oid, from_statuses, "CAPTURING", expect_gen=expect_gen)
+        if g is None:
             o = self.store.get("orders", oid)
             if o["status"] == "COMPLETED":
                 return {**o, "result": "ALREADY_CAPTURED"}
             if o["status"] == "CAPTURING":
                 return {**o, "result": "CAPTURE_IN_PROGRESS"}
+            if expect_gen is not None and o["status"] in from_statuses:
+                return self._superseded(oid)
             raise ValueError(f"order {oid} is {o['status']}, cannot capture")
         o = self.store.get("orders", oid)
+        unknown_before = bool(o.get("capture_unknown"))
         try:
             cap = self.paypal.capture_order(o["paypal_order_id"])
         except PayPalError as e:
             issue = getattr(e, "issue", None) or ""
             if issue in self.NOT_YET_APPROVED or any(t in str(e) for t in self.NOT_YET_APPROVED):
-                self._transition(oid, ("CAPTURING",), "PAYER_ACTION_REQUIRED")
+                # an earlier ambiguous capture keeps the order out of the cancellable state
+                to = "NEEDS_RECONCILIATION" if unknown_before else "PAYER_ACTION_REQUIRED"
+                if not self._transition(oid, ("CAPTURING",), to, expect_gen=g):
+                    return self._superseded(oid)
                 return {**self.store.get("orders", oid), "result": "NOT_APPROVED_YET", "error": str(e),
                         "paypal_issue": issue or None}
-            if e.ambiguous:
-                return self._after_uncertain_capture(oid, str(e), issue)
-            self._transition(oid, ("CAPTURING",), "CAPTURE_FAILED", release=True, paypal_status=str(e)[:200])
+            if e.ambiguous or unknown_before:
+                return self._after_uncertain_capture(oid, str(e), issue, g)
+            if not self._transition(oid, ("CAPTURING",), "CAPTURE_FAILED", release=True, expect_gen=g,
+                                    paypal_status=str(e)[:200]):
+                return self._superseded(oid)
             return {**self.store.get("orders", oid), "error": str(e), "paypal_issue": issue or None}
         except Exception as e:  # anything else: the capture may have happened
-            return self._after_uncertain_capture(oid, f"{type(e).__name__}: {e}", None)
-        return self._apply_capture(oid, cap, ("CAPTURING",))
+            return self._after_uncertain_capture(oid, f"{type(e).__name__}: {e}", None, g)
+        return self._apply_capture(oid, cap, ("CAPTURING",), expect_gen=g)
 
-    def _after_uncertain_capture(self, oid: str, msg: str, issue: str | None) -> dict[str, Any]:
-        """Keep the reservation, then ask PayPal once what actually happened."""
-        self._transition(oid, ("CAPTURING",), "NEEDS_RECONCILIATION",
-                         paypal_status=f"capture outcome unknown: {msg}"[:200])
-        out = self._reconcile_once(oid, ("NEEDS_RECONCILIATION",), allow_capture=False)
+    def _after_uncertain_capture(self, oid: str, msg: str, issue: str | None, gen: int) -> dict[str, Any]:
+        """Keep the reservation, mark the capture outcome unknown, then ask PayPal once."""
+        g = self._transition(oid, ("CAPTURING",), "NEEDS_RECONCILIATION", expect_gen=gen, capture_unknown=1,
+                             paypal_status=f"capture outcome unknown: {msg}"[:200])
+        if g is None:
+            return {**self._superseded(oid), "error": msg, "paypal_issue": issue or None}
+        out = self._reconcile_once(oid, ("NEEDS_RECONCILIATION",), allow_capture=False, gen=g)
         return {**out, "error": msg, "paypal_issue": issue or None}
 
-    def _apply_capture(self, oid: str, cap: dict[str, Any], from_statuses: tuple[str, ...]) -> dict[str, Any]:
-        """Only a COMPLETED order with a COMPLETED capture counts as COMPLETED."""
+    def _apply_capture(self, oid: str, cap: dict[str, Any], from_statuses: tuple[str, ...],
+                       expect_gen: int | None) -> dict[str, Any]:
+        """Only a COMPLETED order with a COMPLETED capture counts as COMPLETED. That final
+        state is accepted from CAPTURING / NEEDS_RECONCILIATION whatever the generation
+        (it can only move an order forward); every other outcome needs `expect_gen`."""
         st, cap_status = cap.get("status"), cap.get("capture_status")
         paypal_status = f"{st}" + (f"/{cap_status}" if cap_status and cap_status != st else "")
         if st == "COMPLETED" and cap_status == "COMPLETED":
-            to, release = "COMPLETED", False
+            ok = self._transition(oid, tuple(dict.fromkeys(from_statuses + ("CAPTURING", "NEEDS_RECONCILIATION"))),
+                                  "COMPLETED", paypal_status=paypal_status, capture_id=cap.get("capture_id"))
         elif cap_status in ("DECLINED", "FAILED") or st == "VOIDED":
-            to, release = "CAPTURE_FAILED", True
+            ok = self._transition(oid, from_statuses, "CAPTURE_FAILED", release=True, expect_gen=expect_gen,
+                                  paypal_status=paypal_status, capture_id=cap.get("capture_id"))
         else:  # capture PENDING, or no capture status: money may move later
-            to, release = "NEEDS_RECONCILIATION", False
-            paypal_status = f"{st}/{cap_status or 'NO_CAPTURE_STATUS'}"
-        self._transition(oid, from_statuses, to, release=release, paypal_status=paypal_status,
-                         capture_id=cap.get("capture_id"))
+            ok = self._transition(oid, from_statuses, "NEEDS_RECONCILIATION", expect_gen=expect_gen,
+                                  capture_unknown=1, capture_id=cap.get("capture_id"),
+                                  paypal_status=f"{st}/{cap_status or 'NO_CAPTURE_STATUS'}")
+        if not ok:
+            cur = self.store.get("orders", oid)
+            if cur["status"] == "COMPLETED":
+                return cur
+            return self._superseded(oid)
         return self.store.get("orders", oid)
 
     # ---- reconciliation -------------------------------------------------
-    def _reconcile_once(self, oid: str, from_statuses: tuple[str, ...], allow_capture: bool) -> dict[str, Any]:
+    def _reconcile_once(self, oid: str, from_statuses: tuple[str, ...], allow_capture: bool,
+                        gen: int | None = None) -> dict[str, Any]:
+        """One provider read applied against the generation it started from."""
         o = self.store.get("orders", oid)
+        if gen is None:
+            gen = int(o["op_gen"])
+        if o["status"] not in from_statuses or int(o["op_gen"]) != gen:
+            return self._superseded(oid)
         if not o.get("paypal_order_id"):
             # create outcome unknown: replay create with the same idempotency key
-            if not self._transition(oid, from_statuses, "CREATING"):
-                return {**self.store.get("orders", oid), "result": "STATE_CHANGED"}
-            out = self._create_at_provider(oid)
-            return {**out, "result": self._result(out)}
+            g = self._transition(oid, from_statuses, "CREATING", expect_gen=gen)
+            if g is None:
+                return self._superseded(oid)
+            out = self._create_at_provider(oid, g)
+            return {**out, "result": out.get("result") or self._result(out)}
         try:
             live = self.paypal.get_order(o["paypal_order_id"])
         except (PayPalError, NotImplementedError) as e:
             return {**o, "result": "STILL_UNCONFIRMED", "error": str(e)}
         st = live.get("status")
+        unknown = bool(o.get("capture_unknown"))
+        ok = True
         if st == "COMPLETED":
-            out = self._apply_capture(oid, live, from_statuses)
+            out = self._apply_capture(oid, live, from_statuses, expect_gen=gen)
         elif st == "APPROVED" and allow_capture:
-            out = self._capture(oid, from_statuses)
-        elif st in ("CREATED", "SAVED", "PAYER_ACTION_REQUIRED"):
-            self._transition(oid, from_statuses, "PAYER_ACTION_REQUIRED", paypal_status=st)
+            out = self._capture(oid, from_statuses, expect_gen=gen)
+        elif st in self.AWAITING_BUYER and not unknown:
+            ok = self._transition(oid, from_statuses, "PAYER_ACTION_REQUIRED", expect_gen=gen, paypal_status=st)
             out = self.store.get("orders", oid)
         elif st == "VOIDED":
-            self._transition(oid, from_statuses, "CANCELLED", release=True, paypal_status=st)
+            ok = self._transition(oid, from_statuses, "CANCELLED", release=True, expect_gen=gen, paypal_status=st)
             out = self.store.get("orders", oid)
         else:
-            out = {**self.store.get("orders", oid), "paypal_live_status": st}
+            # APPROVED without permission to capture, or awaiting the buyer after an
+            # ambiguous capture: stay reserved and non-cancellable (never move backward).
+            cur = self.store.get("orders", oid)
+            if int(cur["op_gen"]) != gen:
+                return {**self._superseded(oid), "paypal_live_status": st}
+            out = {**cur, "paypal_live_status": st}
+        if not ok:
+            return self._superseded(oid)
         out = dict(out)
         out.setdefault("result", self._result(out))
         return out
@@ -390,9 +507,18 @@ class BuyerService:
         if o is None:
             raise KeyError(oid)
         stuck_cutoff = self._ts(self._clock() - STUCK_AFTER)
-        if o["status"] == "NEEDS_RECONCILIATION" or (
-                o["status"] in ("CREATING", "CAPTURING") and (o.get("updated_at") or "") < stuck_cutoff):
-            return self._reconcile_once(oid, (o["status"],), allow_capture=True)
+        gen = int(o["op_gen"])
+        if o["status"] == "NEEDS_RECONCILIATION":
+            return self._reconcile_once(oid, ("NEEDS_RECONCILIATION",), allow_capture=True, gen=gen)
+        if o["status"] in ("CREATING", "CAPTURING") and (o.get("updated_at") or "") < stuck_cutoff:
+            if o["status"] == "CAPTURING":
+                # claim the stuck capture first: a capture call was made, its outcome is unknown
+                g = self._transition(oid, ("CAPTURING",), "NEEDS_RECONCILIATION", expect_gen=gen,
+                                     capture_unknown=1, paypal_status="capture stuck; outcome unknown")
+                if g is None:
+                    return self._superseded(oid)
+                return self._reconcile_once(oid, ("NEEDS_RECONCILIATION",), allow_capture=True, gen=g)
+            return self._reconcile_once(oid, ("CREATING",), allow_capture=True, gen=gen)
         return {**o, "result": "NOTHING_TO_RECONCILE"}
 
     # ---- order status / manual capture / cancel by our order id -------
@@ -438,7 +564,8 @@ class BuyerService:
         refuses to capture a CANCELLED order."""
         if self.store.get("orders", oid) is None:
             raise KeyError(oid)
-        if self._transition(oid, ("PAYER_ACTION_REQUIRED",), "CANCELLED", release=True):
+        if self._transition(oid, ("PAYER_ACTION_REQUIRED",), "CANCELLED", release=True,
+                            extra_where="capture_unknown=0"):
             return {**self.store.get("orders", oid), "result": "CANCELLED"}
         o = self.store.get("orders", oid)
         return {**o, "result": "ALREADY_CANCELLED" if o["status"] == "CANCELLED" else "NOT_CANCELLABLE"}
@@ -454,34 +581,79 @@ class BuyerService:
         """Buyer returned from PayPal after approving: capture (idempotent)."""
         return self.capture(self._by_paypal_id(paypal_order_id)["id"])
 
-    def cancel_payment(self, paypal_order_id: str) -> dict[str, Any]:
-        """Buyer cancelled on PayPal: release the reserved spend if still awaiting approval."""
-        return self.cancel(self._by_paypal_id(paypal_order_id)["id"])
+    def cancel_payment(self, paypal_order_id: str, state: str | None = None) -> dict[str, Any]:
+        """Buyer cancelled on PayPal: release the reserved spend if still awaiting approval.
+        `state` must be the HMAC put into this order's cancel_url (PermissionError otherwise)."""
+        o = self._by_paypal_id(paypal_order_id)
+        if not self.verify_cancel_state(o["id"], state):
+            raise PermissionError("missing or invalid signed cancel state")
+        return self.cancel(o["id"])
 
     def expire_stale(self) -> list[str]:
         """Expire orders the buyer never approved within approval_ttl (atomically; an
         order already moved to CAPTURING is never expired)."""
         cutoff = self._ts(self._clock() - self.approval_ttl)
-        q = "SELECT id FROM orders WHERE status='PAYER_ACTION_REQUIRED' AND created_at < ?"
+        q = ("SELECT id FROM orders WHERE status='PAYER_ACTION_REQUIRED' AND capture_unknown=0 "
+             "AND created_at < ?")
         with self.store.lock:
             if not self.store.conn.execute(q, (cutoff,)).fetchone():
                 return []
         expired = []
         with self.store.tx() as c:
             for (oid,) in c.execute(q, (cutoff,)).fetchall():
-                cur = c.execute("UPDATE orders SET status='EXPIRED', updated_at=? "
-                                "WHERE id=? AND status='PAYER_ACTION_REQUIRED'", (self._ts(), oid))
+                cur = c.execute("UPDATE orders SET status='EXPIRED', updated_at=?, op_gen=op_gen+1 "
+                                "WHERE id=? AND status='PAYER_ACTION_REQUIRED' AND capture_unknown=0",
+                                (self._ts(), oid))
                 if cur.rowcount == 1:
                     c.execute("DELETE FROM spend WHERE order_ref=?", (oid,))
                     expired.append(oid)
         return expired
 
+    def acquire_mock_lock(self) -> None:
+        """Mock mode is single-process (N3): MockPayPal state lives in this process's
+        memory, so two processes on one database would each see the other's orders as
+        "lost". Take an exclusive, non-blocking lock file next to the DB for the lifetime
+        of this service; fail fast if another process holds it."""
+        if not isinstance(self.paypal, MockPayPal) or self.store.db_path == ":memory:":
+            return
+        if getattr(self, "_mock_lock", None) is not None:
+            return
+        path = f"{self.store.db_path}.mock.lock"
+        fh = open(path, "a+")
+        try:
+            try:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except ImportError:  # pragma: no cover - Windows
+                import msvcrt
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            fh.close()
+            raise MockLockError(
+                f"PAYPAL_MODE=mock is single-process: another GuardRail Buyer process already uses "
+                f"{self.store.db_path} (lock file {path}). Stop it, or use a different DB_PATH. "
+                f"Do not run mock mode with several workers.") from None
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(os.getpid()))
+        fh.flush()
+        self._mock_lock = fh
+
+    def release_mock_lock(self) -> None:
+        fh = getattr(self, "_mock_lock", None)
+        if fh is not None:
+            fh.close()  # closing the descriptor drops the flock
+            self._mock_lock = None
+
     def invalidate_lost_mock_orders(self) -> list[str]:
         """MockPayPal keeps its orders in memory. After a restart, open orders that point
         at a mock order this process does not know can never be approved or captured:
-        mark them MOCK_RESET and release their reservations (B9)."""
+        mark them MOCK_RESET and release their reservations (B9). Only runs once this
+        process holds the exclusive mock lock (N3), so it can never touch the orders of
+        another live worker."""
         if not isinstance(self.paypal, MockPayPal):
             return []
+        self.acquire_mock_lock()
         lost = []
         for st in ("PAYER_ACTION_REQUIRED", "CAPTURING", "NEEDS_RECONCILIATION"):
             for o in self.store.list("orders", st):
@@ -586,7 +758,12 @@ class BuyerService:
                         "note": "the product's terms changed since approval was requested; nothing was "
                                 "bought. Request a fresh approval for the current quote."}
             p, req = self._line(a["product_id"], int(a["quantity"]))
-            d = hard_rules_only(self.policy, req)  # policy may have changed since the request
+            # Policy may have changed since the request, and other purchases for the same
+            # SKU/merchant in the same agent request may have executed meanwhile (N4):
+            # recheck the hard rules (incl. the aggregate hard maximum) inside this
+            # transaction. Human approval waives only the soft caps.
+            prior = self._related_prior(a.get("request_id"), p["id"], p["merchant"])
+            d = hard_rules_only(self.policy, req, prior)
             if d.verdict == Verdict.DENY:
                 c.execute("UPDATE approvals SET status='DENIED_BY_POLICY', decided_at=? WHERE id=? AND status='PENDING'",
                           (self._ts(), approval_id))

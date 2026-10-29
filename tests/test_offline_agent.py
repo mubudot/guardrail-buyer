@@ -43,15 +43,17 @@ def test_run_demo_goes_through_guardrails(service):
     assert res.usage == {"input_tokens": 0, "output_tokens": 0}
 
 
-def test_unknown_item_reported_and_nothing_bought(service):
+def test_unknown_item_refused_and_nothing_bought(service):
+    # fix round 5: words outside the catalog vocabulary are outside the grammar -> refused
     res = OfflineAgent(service).run("buy a pony")
-    assert "not found in the catalog" in res.final_text
+    assert res.stopped_reason == "offline_refused" and '"pony"' in res.final_text
+    assert "Supported offline grammar" in res.final_text
     assert service.store.list("orders") == []
 
 
 def test_nothing_matched(service):
     res = OfflineAgent(service).run("hello there")
-    assert "could not match" in res.final_text
+    assert res.stopped_reason == "offline_refused" and "Nothing was ordered" in res.final_text
 
 
 def test_make_agent_modes(service, monkeypatch):

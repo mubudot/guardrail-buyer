@@ -101,7 +101,7 @@ class FakeAgent:
 
 
 def test_rest_endpoints(service):
-    client = TestClient(create_app(service, FakeAgent(service), approver_token=""))
+    client = TestClient(create_app(service, FakeAgent(service), approver_token="", demo_mode=True))
     assert client.get("/health").json()["paypal"] == "mock"
     pol = client.get("/policy").json()
     assert pol["per_order_cap"] == "50.00" and pol["spent_today"] == "0.00"

@@ -119,7 +119,11 @@ def against_app(base: str, token: str, use_agent: bool) -> None:
     check(r.status_code == 409 and r.json()["detail"]["paypal_issue"] == "ORDER_NOT_APPROVED",
           "capture before approval -> 409 ORDER_NOT_APPROVED", r.status_code)
     r = c.get("/paypal/cancel", params={"token": o["paypal_order_id"], "format": "json"})
-    check(r.json()["status"] == "CANCELLED", "/paypal/cancel -> CANCELLED")
+    check(r.status_code == 403, "unsigned /paypal/cancel -> 403 (needs the signed state from the cancel_url)",
+          r.status_code)
+    r = c.post(f"/orders/{o['id']}/cancel", headers=hdr)
+    check(r.status_code == 200 and r.json()["status"] == "CANCELLED", "POST /orders/{id}/cancel -> CANCELLED",
+          r.status_code)
     print("approvals pending:", [(a["id"], a["product_name"]) for a in c.get("/approvals?status=PENDING").json()])
     print("spend:", c.get("/spend").json())
 

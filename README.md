@@ -22,7 +22,8 @@ The agent (Claude, via tool use) can search the catalog, dry-run the policy,
 place an order, or ask for human approval. **It never calls PayPal directly** —
 every order goes through `BuyerService`, which re-evaluates the policy on the
 server. A DENY can never be escalated to approval, and approving a request
-re-checks the deny rules in case the policy changed. What exactly is enforced, and what is not,
+re-checks every deny rule (including the split-order hard maximum) in case the policy or the
+request's other purchases changed; a human approval waives only the soft caps. What exactly is enforced, and what is not,
 is listed under [Known limitations](#known-limitations).
 
 ## Architecture
@@ -55,12 +56,23 @@ natural-language request
 3. The buyer approves on PayPal and is redirected to `GET /paypal/return?token=<paypal order id>`. The order
    is atomically moved to `CAPTURING`, captured, and redirected to the dashboard (a refresh or a parallel
    return never captures twice).
-4. `GET /paypal/cancel?token=…` cancels **only** an order still awaiting the buyer (`PAYER_ACTION_REQUIRED`),
-   atomically. Orders being captured, captured, or of unknown outcome are left untouched.
+4. `GET /paypal/cancel?token=…&state=…` cancels **only** an order still awaiting the buyer
+   (`PAYER_ACTION_REQUIRED`), atomically. `state` is an HMAC of our order id with a server secret (stored
+   in the DB, or `STATE_SECRET`), generated when the order is created and embedded in that order's PayPal
+   `cancel_url`; a request without it, or with a forged/other order's state, gets `403`. Orders being
+   captured, captured, or of unknown outcome are left untouched.
 5. If PayPal's answer is ambiguous (HTTP 5xx, timeout/transport error, capture status `PENDING` or missing),
    the order becomes `NEEDS_RECONCILIATION`, keeps its reservation, and the app asks PayPal for the order
    status. Only a confirmed `COMPLETED` capture is recorded as `COMPLETED`.
    `POST /orders/{id}/reconcile` re-checks later.
+6. **Recovery is monotonic and exclusive.** Every status change bumps a persisted per-order generation
+   (`op_gen`). A reconcile/capture result is applied only if the generation it started from is unchanged;
+   a delayed, superseded provider read is rejected (`result: SUPERSEDED`). The one result accepted
+   regardless is a confirmed `COMPLETED` capture (it is final). Once a capture outcome was ambiguous
+   (`capture_unknown=1`), the order never returns to `PAYER_ACTION_REQUIRED` and cannot be cancelled or
+   expired; it stays reserved until PayPal reports it `COMPLETED`, declined or `VOIDED`. A create replay
+   that returns an already `APPROVED`/`COMPLETED` PayPal order is captured/verified, never shown as
+   awaiting the buyer.
 
 | Order status | Counts toward the daily cap? |
 |---|---|
@@ -75,6 +87,10 @@ Approvals: a human approval is **claimed once** (`PENDING → EXECUTING → APPR
 that creates its single order; repeating the approve call returns the existing order. An approval is
 **bound to its quote** (product, quantity, amount, currency, merchant, category): if the catalog changed in
 between, approving returns `409 QUOTE_CHANGED`, nothing is bought, and a fresh approval is needed.
+Executing an approval re-checks the hard rules inside the same transaction, including the split-order
+hard maximum over what the same agent request has already ordered (so two queued $329 monitor approvals
+from one request cannot both execute against the $500 hard maximum); the per-order and daily caps are
+the only rules a human approval waives.
 
 Split orders: within one agent request (`request_id`, one per `/agent/request` run), orders for the
 **same SKU from the same merchant** count together toward the per-order cap and the hard maximum. Three
@@ -92,7 +108,8 @@ Requires Python 3.11+ (tested with 3.12) and git. `requirements.txt` pins the ex
 ### No keys, no network: copy-paste offline block
 
 Runs the tests, the server and the CLI with the rule-based offline agent and the mock PayPal. Only the
-`pip install` line needs network (a package index). Paste into a bash shell at the repository root:
+`pip install` line needs network (a package index). Paste into a **fresh** bash shell at the repository root
+(the exports below override `.env` for the rest of that shell; see *Switching modes*):
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
@@ -102,27 +119,55 @@ pip install -r requirements.txt                         # the only step that nee
 export AGENT_MODE=offline          # rule-based parser instead of Claude (applies to server AND CLI)
 export PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1          # mock PayPal with a local mock checkout page
 export APPROVER_TOKEN=demo         # token for approve / reject / cancel
+export DEMO_MODE=1                 # explicit local-demo flag (only an empty APPROVER_TOKEN depends on it)
 export GRB_NO_DOTENV=1             # ignore any .env file, so nothing switches back to Claude/Sandbox
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"         # throwaway database for this shell
+export PORT=8000                   # any free port; if it is busy, pick another one ...
+export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
+export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 110 passed
-uvicorn app.main:app --port 8000 &                      # dashboard: http://localhost:8000/ (token: demo)
-sleep 3
-curl -s -X POST localhost:8000/agent/request -H 'content-type: application/json' \
-  -d '{"request":"Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card as a welcome present."}' \
-  | python -c 'import json,sys; print(json.load(sys.stdin)["final_text"])'
-curl -s localhost:8000/spend; echo                      # cables reserved: total 25.98
+python -m pytest -q                                     # -> 148 passed
+
+uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
+SERVER_PID=$!
+READY=0
+for i in $(seq 1 40); do                                # wait up to ~20 s for /health of THIS instance
+  kill -0 "$SERVER_PID" 2>/dev/null || break            # server exited: port busy, or mock DB locked
+  curl -sf "$PUBLIC_BASE_URL/health" | grep -q "\"instance\":\"$GRB_INSTANCE\"" && { READY=1; break; }
+  sleep 0.5
+done
+if [ "$READY" = 1 ]; then echo "server ready: $PUBLIC_BASE_URL/ (pid $SERVER_PID)"; else
+  echo "SERVER NOT READY - see ${DB_PATH%/*}/server.log (port $PORT busy? export another PORT and the"
+  echo "matching PUBLIC_BASE_URL, then rerun from the uvicorn line)"; kill "$SERVER_PID" 2>/dev/null; fi
+
+if [ "$READY" = 1 ]; then
+  curl -s -X POST "$PUBLIC_BASE_URL/agent/request" -H 'content-type: application/json' \
+    -d '{"request":"Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card as a welcome present."}' \
+    | python -c 'import json,sys; print(json.load(sys.stdin)["final_text"])'
+  curl -s "$PUBLIC_BASE_URL/spend"; echo               # cables reserved: total 25.98
+fi
 python -m app.cli "3 bags of coffee beans and 2 snack boxes"   # CLI: own in-memory DB each run
 ```
 
-Then open <http://localhost:8000/>, enter `demo` as approver token, click **Pay with PayPal** on the
-cables order (local mock checkout → **Pay now**) and **Approve** the keyboard.
+Then open the printed URL (`$PUBLIC_BASE_URL/`), enter `demo` as approver token, click **Pay with PayPal**
+on the cables order (local mock checkout → **Pay now**) and **Approve** the keyboard.
 
-**Reset / rerun:** `kill %1` (stop the server) and `rm -f "$DB_PATH"*` (or start a new shell and paste the
-`export` lines again, which picks a new temp DB). The mock PayPal keeps its orders **in memory**: after a
-server restart, open mock orders from the previous run can no longer be paid; on startup they are marked
-`MOCK_RESET` and their reservations are released (completed orders stay as history). Use a fresh `DB_PATH`
-for a clean demo.
+**Reset / rerun:** `kill $SERVER_PID` (stop the server) and `rm -f "$DB_PATH"*` (or start a new shell and paste
+the `export` lines again, which picks a new temp DB). The ready check fails, instead of silently talking to
+another program, when the port is already taken: it only accepts a `/health` answer carrying this shell's
+`GRB_INSTANCE`.
+
+**Mock mode is single-process.** The mock PayPal keeps its orders **in memory**, so only one server process
+may use a database in mock mode: on startup it takes an exclusive lock file next to the DB
+(`$DB_PATH.mock.lock`) and exits with a clear error if another process holds it (do not use
+`uvicorn --workers N` with the mock). Only after taking the lock does it treat open mock orders from a
+previous run as lost: they are marked `MOCK_RESET` and their reservations released (completed orders stay
+as history). Use a fresh `DB_PATH` for a clean demo. Sandbox mode has no such restriction.
+
+**Switching modes.** Exported variables win over `.env`, and the offline block sets `AGENT_MODE`,
+`PAYPAL_MODE` and `GRB_NO_DOTENV=1` (which disables `.env` entirely). Before following the Claude or
+Sandbox instructions below, stop the server and open a **new shell**, or run:
+`unset AGENT_MODE PAYPAL_MODE PAYPAL_MOCK_APPROVAL APPROVER_TOKEN DEMO_MODE GRB_NO_DOTENV DB_PATH PORT PUBLIC_BASE_URL GRB_INSTANCE`.
 
 ### With Claude (and optionally the real PayPal Sandbox)
 
@@ -136,20 +181,23 @@ cp .env.example .env               # then put your Anthropic key in ANTHROPIC_AP
 The defaults run with a **mock PayPal** (no PayPal account, no network) and the Claude agent.
 
 > **About the offline agent.** `AGENT_MODE=offline` swaps Claude for a small deterministic, rule-based
-> parser (`app/offline_agent.py`, clearly **not** AI) that understands simple positive shopping lists over
-> the demo catalog ("2 USB-C cables, a mechanical keyboard and a $100 gift card"). Requests with negated or
-> conditional wording ("don't", "no", "never", "if", …) are refused as a whole and quantity 0 is never
-> ordered. It calls the *same* tools through the *same* `BuyerService`, so every guardrail, PayPal order,
+> parser (`app/offline_agent.py`, clearly **not** AI) with a **positive-only grammar**:
+> `[buy|get|order|purchase|need] <quantity> <catalog item> [for/as <short purpose>]`, clauses joined by
+> commas, "and", "plus" or ";"; `<quantity>` is a non-negative whole number or a/an/one…ten/pair/dozen and
+> item words must come from the catalog vocabulary. Anything else ("Avoid buying …", "… only when
+> approved", "Buy -1 …", "1.5", unknown verbs or words) is refused as a whole with the supported grammar in
+> the reply, and quantity 0 is never ordered. It calls the *same* tools through the *same* `BuyerService`, so every guardrail, PayPal order,
 > approval and refusal behaves exactly as with Claude; the dashboard header shows
 > **OFFLINE rule-based agent (no AI)**. Claude remains the default and handles free-form requests.
 
 Run all commands from the repository root with the venv active (paths in `.env` are relative).
 The commands below use bash syntax (`VAR=value cmd`); on Windows set the variables in `.env` instead.
-If you serve on a port other than 8000, also set `PUBLIC_BASE_URL` (used for the PayPal return links).
+If you serve on a port other than 8000, also set `PUBLIC_BASE_URL` to the same port (used for the PayPal
+return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `110 passed` (no network, no API key needed).
+1. **Run the tests** — `python -m pytest -q` → see `148 passed` (no network, no API key needed).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -176,8 +224,10 @@ If you serve on a port other than 8000, also set `PUBLIC_BASE_URL` (used for the
 Create a free REST app at <https://developer.paypal.com/> (Apps & Credentials → Sandbox), copy its
 client id and secret into `.env`, then:
 
+Use a fresh shell (see *Switching modes*), then:
+
 ```bash
-# in .env: PAYPAL_MODE=sandbox  PAYPAL_CLIENT_ID=…  PAYPAL_CLIENT_SECRET=…
+# in .env: PAYPAL_MODE=sandbox  PAYPAL_CLIENT_ID=…  PAYPAL_CLIENT_SECRET=…  (PUBLIC_BASE_URL if not :8000)
 APPROVER_TOKEN=demo uvicorn app.main:app --port 8000
 python scripts/sandbox_smoke.py          # no LLM: guardrails -> real Sandbox orders -> status -> capture-before-approval -> cancel
 python scripts/sandbox_smoke.py --app http://localhost:8000 --agent --token demo   # same, through the running app + Claude agent
@@ -215,22 +265,22 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/agent/request` | `{"request": "..."}` — run the agent; returns final text, transcript, token usage |
+| POST | `/agent/request` | `{"request": "..."}` — run the agent; returns final text, transcript, token usage. Rate-limited per client IP (`AGENT_RATE_LIMIT`, default 20/60 s) → `429` |
 | GET | `/orders` | all orders (`?status=COMPLETED`) with the policy decision attached |
 | GET | `/orders/{id}` | one order; `?refresh=true` (default) adds `paypal_live_status` from PayPal |
 | POST | `/orders/{id}/capture` | capture after buyer approval (fallback for a lost redirect); not approved yet → `409 NOT_APPROVED_YET` |
 | POST | `/orders/{id}/reconcile` | resolve a `NEEDS_RECONCILIATION` order from PayPal's order status (never charges twice) |
-| POST | `/orders/{id}/cancel` | cancel an order still awaiting the buyer, release its reservation (approver token); otherwise `409` |
+| POST | `/orders/{id}/cancel` | cancel an order still awaiting the buyer, release its reservation (approver token); otherwise `409`; `503` when no `APPROVER_TOKEN` is configured (unless `DEMO_MODE=1`) |
 | GET | `/approvals` | approval requests (`?status=PENDING`) |
-| POST | `/approvals/{id}/approve` | approve once → quote unchanged? deny rules re-checked → PayPal order; a repeat returns the same order; changed quote → `409` (needs `X-Approver-Token` when `APPROVER_TOKEN` is set) |
+| POST | `/approvals/{id}/approve` | approve once → quote unchanged? deny rules (incl. split-order hard max) re-checked → PayPal order; a repeat returns the same order; changed quote → `409`. Needs `X-Approver-Token`; with no `APPROVER_TOKEN` configured → `503` unless `DEMO_MODE=1` |
 | POST | `/approvals/{id}/reject` | reject, nothing is paid (same token) |
 | GET | `/paypal/return?token=…` | PayPal redirect after buyer approval → capture |
-| GET | `/paypal/cancel?token=…` | PayPal redirect on cancel → cancels only if still awaiting the buyer |
+| GET | `/paypal/cancel?token=…&state=…` | PayPal redirect on cancel → requires the signed `state` from the order's cancel_url (`403` otherwise); cancels only if still awaiting the buyer |
 | GET | `/spend` | today's captured / reserved / remaining vs caps |
 | GET | `/policy` | active policy + today's spend |
 | GET | `/` | AG Grid dashboard |
 | GET | `/catalog` | demo products (`?q=keyboard`) |
-| GET | `/health` | PayPal mode + model |
+| GET | `/health` | PayPal mode, model, approver mode, rate limit, `instance` (= `GRB_INSTANCE`) |
 
 ## Configuration
 
@@ -246,7 +296,11 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 | `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET` | – | Sandbox REST app credentials (`oauth` mode) |
 | `PUBLIC_BASE_URL` | `http://localhost:8000` | base of the PayPal return / cancel URLs |
 | `PAYPAL_APPROVAL_TTL_MIN` | `180` | unapproved orders expire and release their reservation |
-| `APPROVER_TOKEN` | – | required for approve / reject; empty = open (dev only, logs a warning) |
+| `APPROVER_TOKEN` | – | required for approve / reject / cancel. Empty = those endpoints answer `503` (fail closed) |
+| `DEMO_MODE` | `0` | `1` = explicit local demo: an empty `APPROVER_TOKEN` leaves approve / reject / cancel open (logs a warning) |
+| `AGENT_RATE_LIMIT` | `20/60` | max `/agent/request` calls per client IP per window (`N/SECONDS`); `off` disables. In-memory, per process |
+| `STATE_SECRET` | random, stored in the DB | HMAC key for the signed cancel `state` |
+| `PORT`, `GRB_INSTANCE` | – | used by the README launch/ready check only (`GRB_INSTANCE` is echoed by `/health`) |
 | `POLICY_PATH`, `CATALOG_PATH`, `DB_PATH` | `policy.yaml`, `data/catalog.json`, `guardrail.db` | |
 
 ## Status / roadmap
@@ -265,13 +319,17 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 
 This is a hackathon demo meant to run locally. Be precise about what it does and does not protect:
 
-- **Authentication is local-demo scope (review B6).** There is no requester identity, ownership or rate
-  limit: anyone who can reach the server can call `/agent/request` (and spend Claude tokens), list all orders
-  and approvals, and trigger capture of an order a buyer already approved. The single shared
-  `APPROVER_TOKEN` protects approve / reject / cancel; it is stored in the browser's `localStorage`, and an
-  empty token leaves those endpoints open (a warning is logged). `GET /paypal/cancel` is unauthenticated, but
-  it can only cancel an order that is still awaiting buyer approval (no money has moved; worst case the
-  order has to be placed again). Do not expose the app on a public network.
+- **Authentication is local-demo scope (review B6, partly addressed).** There is still no requester identity
+  or ownership: anyone who can reach the server can call `/agent/request`, list all orders and approvals,
+  and trigger capture/reconcile of an order (capture only succeeds if the buyer approved on PayPal). What
+  exists: `/agent/request` has a simple **in-memory per-IP rate limit** (`AGENT_RATE_LIMIT`, per process,
+  reset on restart, keyed on the socket address, so it is not a defence behind a proxy or against many
+  IPs); approve / reject / cancel need the single shared `APPROVER_TOKEN` (stored in the browser's
+  `localStorage`), and an empty token **fails closed** (`503`) unless `DEMO_MODE=1` is set explicitly.
+  The public `GET /paypal/cancel` callback is **not** covered by the approver token; it requires the
+  per-order HMAC `state` from the order's cancel_url (review B3), and even then only cancels an order
+  still awaiting buyer approval. Anyone who obtains that cancel URL (it is in the buyer's PayPal redirect)
+  can cancel that one unpaid order. Do not expose the app on a public network.
 - **Merchants are catalog labels (review B7).** Every order is paid to the one Sandbox merchant behind the
   configured PayPal REST app; the catalog merchant is not mapped to a payee and item details are not sent
   to PayPal. Merchant allow/block rules therefore enforce trusted catalog metadata, not real multi-merchant
@@ -286,11 +344,18 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
   agent request are aggregated. Different SKUs, or separate requests, are judged per order; the daily cap is
   the backstop.
 - **Reconciliation is on demand.** Ambiguous outcomes are checked once right away and then via
-  `POST /orders/{id}/reconcile` (or a capture/return retry); there is no webhook or background job yet.
-- **Mock PayPal state is in memory** (review B9). See the reset note in the offline block above.
+  `POST /orders/{id}/reconcile` (or a capture/return retry); there is no webhook or background job yet. An
+  order whose capture outcome was ambiguous stays reserved (never cancellable or expirable) until PayPal
+  reports it `COMPLETED`, declined or `VOIDED`; if PayPal no longer returns the order at all, resolve it by
+  hand.
+- **Mock PayPal state is in memory and mock mode is single-process** (reviews B9/N3): an exclusive lock
+  file next to the DB enforces one mock server per database. See the offline block above.
 - **Concurrency guarantees assume one SQLite file on local disk** shared by all server processes (SQLite
   locking is unreliable on network file systems).
-- **The offline agent is a restricted grammar**, not a language model: positive shopping lists only.
+- **The offline agent is a restricted grammar**, not a language model: positive shopping lists only, item
+  words from the catalog vocabulary. The optional `for …`/`as …` purpose tail is a free-text label (never
+  executed) checked against a short list of condition/negation words; everything that is executed
+  (verb, quantity, item) is validated positively.
 - **A full real Sandbox buyer approval + capture is not yet recorded.** Live Sandbox runs so far cover order
   creation, live status, capture-before-approval refusal and cancel (`docs/sandbox_smoke_run.txt`); the
   buyer-approval → capture loop is tested against the mock and a wire-format fake of the Sandbox API.
