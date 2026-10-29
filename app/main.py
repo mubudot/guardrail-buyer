@@ -183,11 +183,15 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
         return svc.store.list("approvals", status)
 
     @app.get("/decisions")
-    def list_decisions(limit: int = 1000):
+    def list_decisions(limit: int = 1000, before_id: str | None = None):
         """Audit log: every guardrail decision (check / order / approval request / approval
-        execution) with verdict, rule hit, quote, request id, and the current status of the
-        order or approval it led to. Newest first."""
-        return svc.list_decisions(limit)
+        execution), newest first, with the current status of the order / approval it led
+        to. Paged: `limit` (1..5000) rows, `before_id` = cursor (fetch decisions older than
+        that one; use `next_before_id`). `total` is the number of decisions stored."""
+        try:
+            return svc.decisions_page(limit, before_id)
+        except KeyError:
+            raise HTTPException(404, "unknown before_id")
 
     @app.get("/decisions/{decision_id}")
     def get_decision(decision_id: str):

@@ -146,11 +146,27 @@ const auditGrid = agGrid.createGrid($("audit"), {
 });
 $("audit-search").addEventListener("input", (e) => auditGrid.setGridOption("quickFilterText", e.target.value));
 $("audit-hide-checks").addEventListener("change", () => auditGrid.onFilterChanged());
+// CSV injection (CODEX_REVIEW_4 N4): quoting does not stop a spreadsheet from evaluating a
+// cell that starts with = + - @ TAB or CR. Prefix such text with an apostrophe so it is literal.
+const FORMULA_START = /^[=+\-@\t\r]/;
+function csvSafe(v) {
+  if (v == null) return v;
+  const s = String(v);
+  return FORMULA_START.test(s) ? "'" + s : s;
+}
+function csvCell(p) {
+  const v = p.column.getColId() === "created_at" ? p.value : (p.formatValue ? p.formatValue(p.value) : p.value);
+  return typeof v === "number" ? v : csvSafe(v);
+}
 $("audit-csv").addEventListener("click", () => auditGrid.exportDataAsCsv({
   fileName: `guardrail-audit-${new Date().toISOString().slice(0, 10)}.csv`,
-  processCellCallback: (p) => p.column.getColId() === "created_at" ? p.value : (p.formatValue ? p.formatValue(p.value) : p.value),
+  processCellCallback: csvCell,
+  processHeaderCallback: (p) => csvSafe(p.column.getColDef().headerName || p.column.getColId()),
 }));
-$("detail-close").addEventListener("click", () => { $("audit-detail").hidden = true; auditGrid.deselectAll(); });
+$("detail-close").addEventListener("click", () => {
+  detail.gen++; detail.id = null;            // drop any response still in flight
+  $("audit-detail").hidden = true; auditGrid.deselectAll();
+});
 
 function el(tag, attrs = {}, ...kids) {  // DOM builder: data is always set as text, never as HTML
   const e = document.createElement(tag);
@@ -161,13 +177,29 @@ function el(tag, attrs = {}, ...kids) {  // DOM builder: data is always set as t
 const kv = (rows) => el("table", {}, ...rows.filter((r) => r[1] != null && r[1] !== "")
   .map(([k, v]) => el("tr", {}, el("td", {}, k), el("td", {}, v))));
 
-async function showDecision(id) {
+// Detail identity + freshness (CODEX_REVIEW_4 N3): every request carries the selection
+// generation it was made for; a response for an older selection (or after Close) is dropped.
+// The open detail is re-fetched on every Audit poll and labelled with its snapshot time.
+const detail = {gen: 0, id: null};
+async function showDecision(id, {quiet = false} = {}) {
   const box = $("audit-detail"), body = $("detail-body");
-  box.hidden = false; body.textContent = "Loading…"; $("detail-title").textContent = id;
+  const gen = ++detail.gen; detail.id = id;
+  box.hidden = false; $("detail-title").textContent = id;
+  if (!quiet) { body.textContent = "Loading…"; $("detail-asof").textContent = ""; }
   let d;
   try { d = await api(`/decisions/${encodeURIComponent(id)}`); }
-  catch (e) { body.textContent = "Could not load: " + e.message; return; }
+  catch (e) {
+    if (gen !== detail.gen) return;
+    if (quiet) { $("detail-asof").textContent = `Refresh failed (${e.message}); showing the earlier snapshot`; return; }
+    body.textContent = "Could not load: " + e.message; return;
+  }
+  if (gen !== detail.gen || detail.id !== id) return;  // a newer selection / refresh owns the panel
+  renderDecision(d);
+}
+function renderDecision(d) {
+  const body = $("detail-body");
   const dec = d.decision, q = d.quote;
+  $("detail-asof").textContent = `Snapshot ${new Date(d.as_of || Date.now()).toLocaleTimeString()} · refreshes while the Audit tab is open`;
   body.textContent = "";
   body.append(el("h4", {}, "Decision"), kv([
     ["Verdict", dec.verdict], ["Stage", STAGE[dec.stage] || dec.stage], ["Outcome", dec.outcome],
@@ -182,6 +214,9 @@ async function showDecision(id) {
   if (d.approval) body.append(el("h4", {}, "Approval"), kv([
     ["Approval", d.approval.id], ["Status", d.approval.status], ["Justification", d.approval.justification],
     ["Decided", d.approval.decided_at ? new Date(d.approval.decided_at).toLocaleString() : "pending"]]));
+  if ((d.related_total || 0) > 1) body.append(el("p", {class: "note"},
+    `${d.related_total} decisions for this request/product` +
+    (d.related_total > (d.related_decisions || []).length ? ` (first ${d.related_decisions.length} returned)` : "")));
   body.append(el("h4", {}, "Payment timeline"));
   if (!d.order) body.append(el("p", {class: "note"}, "No order was created by this decision."));
   else {
@@ -193,6 +228,37 @@ async function showDecision(id) {
   }
 }
 
+/* ---------- audit paging (CODEX_REVIEW_4 N5) ---------- */
+// The newest page is re-polled; "Load older" follows the API's keyset cursor (before_id).
+// Rows already loaded are kept and merged by id, so filters/search/CSV cover everything
+// loaded, and the label always says how much of the stored history that is.
+const audit = {rows: new Map(), total: 0, oldestCursor: null, hasMore: false};
+const AUDIT_PAGE = 1000;
+function auditApply(page, older) {
+  for (const r of page.items) audit.rows.set(r.id, r);
+  audit.total = page.total;
+  if (older || audit.oldestCursor === null) { audit.hasMore = page.has_more; audit.oldestCursor = page.next_before_id; }
+  const rows = [...audit.rows.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  auditGrid.setGridOption("rowData", rows);  // getRowId -> delta update, selection kept
+  const n = rows.length;
+  $("audit-count").textContent = `(${audit.total})`;
+  $("audit-window").textContent = n >= audit.total
+    ? `Showing all ${audit.total} decisions`
+    : `Showing newest ${n} of ${audit.total} decisions · search, filters and CSV cover loaded rows only`;
+  $("audit-older").hidden = !(audit.hasMore && n < audit.total);
+}
+async function loadOlderDecisions() {
+  if (!audit.oldestCursor) return;
+  const btn = $("audit-older"); btn.disabled = true;
+  try {
+    const page = await api(`/decisions?limit=${AUDIT_PAGE}&before_id=${encodeURIComponent(audit.oldestCursor)}`);
+    auditApply(page, true);
+  } catch (e) { toast("load older failed: " + e.message); }
+  btn.disabled = false;
+}
+$("audit-older").addEventListener("click", loadOlderDecisions);
+const auditVisible = () => !$("view-audit").hidden && !document.hidden;
+
 /* ---------- tabs ---------- */
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
@@ -200,18 +266,37 @@ for (const tab of document.querySelectorAll(".tab")) {
       const on = t === tab; t.classList.toggle("active", on); t.setAttribute("aria-selected", on);
       $(t.dataset.view).hidden = !on;
     }
-    if (tab.id === "tab-audit") refresh();
+    if (tab.id === "tab-audit") refreshAudit();
   });
 }
 
 function kpi(k, v, extra = "") { return `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div>${extra}</div>`; }
 
-async function refresh() {
+let auditRefreshing = null;
+function refreshAudit() {  // newest audit page + the open detail; never overlapping
+  if (auditRefreshing) return auditRefreshing;
+  auditRefreshing = (async () => {
+    try {
+      auditApply(await api(`/decisions?limit=${AUDIT_PAGE}`), false);
+      if (detail.id && !$("audit-detail").hidden) await showDecision(detail.id, {quiet: true});
+    } catch (e) { toast("audit refresh failed: " + e.message); }
+  })().finally(() => { auditRefreshing = null; });
+  return auditRefreshing;
+}
+
+let refreshing = null, refreshAgain = false;
+function refresh() {  // never overlapping: a request made while one runs schedules exactly one more
+  if (refreshing) { refreshAgain = true; return refreshing; }
+  refreshing = doRefresh().finally(() => {
+    refreshing = null;
+    if (refreshAgain) { refreshAgain = false; refresh(); }
+  });
+  return refreshing;
+}
+async function doRefresh() {
   try {
-    const [orders, approvals, spend, decisions] = await Promise.all([api("/orders"), api("/approvals"), api("/spend"),
-                                                                     api("/decisions")]);
-    auditGrid.setGridOption("rowData", decisions);  // getRowId -> delta update, selection kept
-    $("audit-count").textContent = `(${decisions.length})`;
+    if (auditVisible()) refreshAudit();  // the audit log is polled only while its tab is shown
+    const [orders, approvals, spend] = await Promise.all([api("/orders"), api("/approvals"), api("/spend")]);
     ordersGrid.setGridOption("rowData", orders);
     approvalsGrid.setGridOption("rowData", approvals.filter((a) => a.status === "PENDING"));
     spendGrid.setGridOption("rowData", [
@@ -270,4 +355,5 @@ $("ask").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKe
   if (q.get("paid") || q.get("cancelled")) history.replaceState(null, "", "/");
   refresh();
   setInterval(refresh, 5000);
+  document.addEventListener("visibilitychange", () => { if (auditVisible()) refreshAudit(); });
 })();

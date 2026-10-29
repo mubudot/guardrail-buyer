@@ -23,6 +23,11 @@ methods via tools. Safety properties enforced here (see tests/test_concurrency.p
   COMPLETED capture, which is final. Once a capture outcome was ambiguous
   (orders.capture_unknown=1) the order never returns to PAYER_ACTION_REQUIRED and can
   never be cancelled or expired, only resolved from the provider.
+* the schema is versioned (PRAGMA user_version, fix round 7): each migration runs in one
+  BEGIN IMMEDIATE transaction with its backfill and version bump, so an interrupted
+  upgrade is redone; DBs migrated by rounds 5/6 get a corrective capture_unknown backfill.
+* mock-mode ownership is keyed on the canonical DB file (realpath + dev/inode), so path
+  aliases of one database cannot both own it.
 """
 from __future__ import annotations
 
@@ -91,66 +96,124 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         if db_path != ":memory:":
             self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS orders (
-                id TEXT PRIMARY KEY, product_id TEXT, product_name TEXT, merchant TEXT,
-                category TEXT, quantity INTEGER, amount TEXT, currency TEXT,
-                status TEXT, paypal_order_id TEXT, paypal_status TEXT, capture_id TEXT,
-                approval_id TEXT, decision TEXT, created_at TEXT, approve_url TEXT,
-                updated_at TEXT, request_id TEXT);
-            CREATE TABLE IF NOT EXISTS approvals (
-                id TEXT PRIMARY KEY, product_id TEXT, product_name TEXT, merchant TEXT,
-                category TEXT, quantity INTEGER, amount TEXT, currency TEXT,
-                justification TEXT, reasons TEXT, status TEXT, order_id TEXT,
-                created_at TEXT, decided_at TEXT, request_id TEXT);
-            """
-        )
-        # migrate DBs created by older versions
+        self.migrate()
+
+    # ---- versioned schema migrations (fix round 7, CODEX_REVIEW_4 N1) ----------
+    # The schema version lives in the SQLite header (PRAGMA user_version), which is
+    # part of the database file and changes transactionally. Every migration runs in
+    # ONE explicit BEGIN IMMEDIATE ... COMMIT that contains its DDL (ALTER/CREATE), its
+    # data backfill AND the version bump, so a crash at any point leaves the DB at the
+    # previous version with none of the migration applied; the next open re-runs it.
+    # Versions written by rounds <= 6 never set user_version, so they are all version 0
+    # and get every migration below, including the corrective re-backfill (v3).
+    # Python's executescript() commits implicitly, so migrations use execute() only.
+    @staticmethod
+    def _cols(c, table: str) -> set[str]:
+        return {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+
+    def _m1_base(self, c) -> None:
+        """Base tables plus the columns added in rounds 1-4 (idempotent on old DBs)."""
+        c.execute("""CREATE TABLE IF NOT EXISTS orders (
+            id TEXT PRIMARY KEY, product_id TEXT, product_name TEXT, merchant TEXT,
+            category TEXT, quantity INTEGER, amount TEXT, currency TEXT,
+            status TEXT, paypal_order_id TEXT, paypal_status TEXT, capture_id TEXT,
+            approval_id TEXT, decision TEXT, created_at TEXT, approve_url TEXT,
+            updated_at TEXT, request_id TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS approvals (
+            id TEXT PRIMARY KEY, product_id TEXT, product_name TEXT, merchant TEXT,
+            category TEXT, quantity INTEGER, amount TEXT, currency TEXT,
+            justification TEXT, reasons TEXT, status TEXT, order_id TEXT,
+            created_at TEXT, decided_at TEXT, request_id TEXT)""")
+        c.execute(SpendLedger.SCHEMA)
+        c.execute("CREATE INDEX IF NOT EXISTS spend_ref ON spend(order_ref)")
         for table, wanted in (("orders", ("approve_url", "updated_at", "request_id")),
                               ("approvals", ("request_id",))):
-            cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            cols = self._cols(c, table)
             for col in wanted:
                 if col not in cols:
-                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
-        # fix round 5: operation generation + "a capture may have happened" flag
-        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(orders)")}
-        for col in ("op_gen", "capture_unknown"):
-            if col not in cols:
-                self.conn.execute(f"ALTER TABLE orders ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
-        if "capture_unknown" not in cols:
-            # fix round 6 (CODEX_REVIEW_3 #1): a DB written by a version without this flag
-            # cannot tell whether an unresolved order ever had an ambiguous capture. Be
-            # conservative: every legacy order whose payment outcome is open (or that was
-            # mid-capture) is treated as "a capture may have happened", so it can never be
-            # moved back to PAYER_ACTION_REQUIRED, cancelled or expired, only resolved from
-            # the provider (COMPLETED / declined / VOIDED).
-            self.conn.execute("UPDATE orders SET capture_unknown=1 "
-                              "WHERE status IN ('NEEDS_RECONCILIATION', 'CAPTURING')")
-        # fix round 6: guardrail decision audit log + order status timeline
-        self.conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS decisions (
-                id TEXT PRIMARY KEY, created_at TEXT, stage TEXT, request_id TEXT,
-                product_id TEXT, product_name TEXT, merchant TEXT, category TEXT,
-                quantity INTEGER, amount TEXT, currency TEXT, verdict TEXT, outcome TEXT,
-                rule_hit TEXT, reasons TEXT, rules TEXT, spent_before TEXT,
-                order_id TEXT, approval_id TEXT);
-            CREATE INDEX IF NOT EXISTS decisions_created ON decisions(created_at);
-            CREATE INDEX IF NOT EXISTS decisions_order ON decisions(order_id);
-            CREATE TABLE IF NOT EXISTS order_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT, at TEXT,
-                from_status TEXT, to_status TEXT, op_gen INTEGER, note TEXT);
-            CREATE INDEX IF NOT EXISTS order_events_order ON order_events(order_id);
-            """)
-        self.conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS orders_paypal ON orders(paypal_order_id)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS orders_req ON orders(request_id, product_id)")
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+        c.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        c.execute("CREATE INDEX IF NOT EXISTS orders_paypal ON orders(paypal_order_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS orders_req ON orders(request_id, product_id)")
         try:  # one order per approval (B2). Old DBs that already hold duplicates keep working.
-            self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS orders_one_per_approval "
-                              "ON orders(approval_id) WHERE approval_id IS NOT NULL")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS orders_one_per_approval "
+                      "ON orders(approval_id) WHERE approval_id IS NOT NULL")
         except sqlite3.IntegrityError:  # pragma: no cover - legacy data only
             pass
+
+    _OPEN_UNCERTAIN = ("UPDATE orders SET capture_unknown=1 "
+                       "WHERE status IN ('NEEDS_RECONCILIATION', 'CAPTURING') AND capture_unknown=0")
+
+    def _m2_recovery_columns(self, c) -> None:
+        """Round 5: per-order operation generation + "a capture may have happened" flag.
+        ALTER and backfill are one transaction (with the version bump): a DB written
+        without the flag cannot tell whether an unresolved order ever had an ambiguous
+        capture, so every order open in NEEDS_RECONCILIATION / CAPTURING is treated as
+        "a capture may have happened" -- it can never return to PAYER_ACTION_REQUIRED,
+        be cancelled or expire, only be resolved from the provider."""
+        cols = self._cols(c, "orders")
+        for col in ("op_gen", "capture_unknown"):
+            if col not in cols:
+                c.execute(f"ALTER TABLE orders ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+        if "capture_unknown" not in cols:
+            c.execute(self._OPEN_UNCERTAIN)
+
+    def _m3_capture_unknown_corrective(self, c) -> None:
+        """Corrective re-backfill (CODEX_REVIEW_4 N1) for DBs that already had the column
+        when v2 ran, i.e. DBs migrated by rounds 5/6 outside this version scheme: round 5
+        added the flag with no backfill at all, and round 6 skipped its backfill whenever
+        the column existed or the ALTER had been autocommitted before a crash. Their open
+        NEEDS_RECONCILIATION / CAPTURING orders get capture_unknown=1 now. Version-gated:
+        runs exactly once per DB, never on later restarts."""
+        c.execute(self._OPEN_UNCERTAIN)
+
+    def _m4_audit(self, c) -> None:
+        """Round 6 audit log + order timeline; round 7 index for the bounded related query."""
+        c.execute("""CREATE TABLE IF NOT EXISTS decisions (
+            id TEXT PRIMARY KEY, created_at TEXT, stage TEXT, request_id TEXT,
+            product_id TEXT, product_name TEXT, merchant TEXT, category TEXT,
+            quantity INTEGER, amount TEXT, currency TEXT, verdict TEXT, outcome TEXT,
+            rule_hit TEXT, reasons TEXT, rules TEXT, spent_before TEXT,
+            order_id TEXT, approval_id TEXT)""")
+        c.execute("CREATE INDEX IF NOT EXISTS decisions_created ON decisions(created_at)")
+        c.execute("CREATE INDEX IF NOT EXISTS decisions_order ON decisions(order_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS decisions_req ON decisions(request_id, product_id, created_at)")
+        c.execute("""CREATE TABLE IF NOT EXISTS order_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT, at TEXT,
+            from_status TEXT, to_status TEXT, op_gen INTEGER, note TEXT)""")
+        c.execute("CREATE INDEX IF NOT EXISTS order_events_order ON order_events(order_id)")
+
+    MIGRATIONS = ((1, "_m1_base"), (2, "_m2_recovery_columns"),
+                  (3, "_m3_capture_unknown_corrective"), (4, "_m4_audit"))
+    SCHEMA_VERSION = MIGRATIONS[-1][0]
+
+    def schema_version(self) -> int:
+        with self.lock:
+            return self.conn.execute("PRAGMA user_version").fetchone()[0]
+
+    def migrate(self) -> int:
+        """Apply every pending migration, each in its own atomic transaction. Safe with
+        several processes opening the DB at once: the version is re-read under the
+        write lock, so a migration another process already applied is skipped."""
+        with self.lock:
+            for version, name in self.MIGRATIONS:
+                if self.schema_version() >= version:
+                    continue
+                self.conn.execute("BEGIN IMMEDIATE")
+                try:
+                    current = self.conn.execute("PRAGMA user_version").fetchone()[0]
+                    if current < version:
+                        getattr(self, name)(self.conn)
+                        self.conn.execute(f"PRAGMA user_version = {int(version)}")
+                except BaseException:
+                    self.conn.execute("ROLLBACK")
+                    raise
+                self.conn.execute("COMMIT")
+            v = self.schema_version()
+            if v > self.SCHEMA_VERSION:
+                raise RuntimeError(f"{self.db_path}: database schema version {v} is newer than this "
+                                   f"code supports ({self.SCHEMA_VERSION}); refusing to run an old version on it")
+            return v
 
     @contextmanager
     def tx(self):
@@ -670,16 +733,36 @@ class BuyerService:
                     expired.append(oid)
         return expired
 
+    def db_identity(self) -> tuple[str, int, int]:
+        """Canonical identity of the database file (CODEX_REVIEW_4 N2): the fully
+        resolved path (symlinks, `..`, relative paths) plus its device/inode, so every
+        alias of one file maps to the same owner."""
+        real = os.path.realpath(self.store.db_path)
+        st = os.stat(real)
+        return real, st.st_dev, st.st_ino
+
     def acquire_mock_lock(self) -> None:
         """Mock mode is single-process (N3): MockPayPal state lives in this process's
         memory, so two processes on one database would each see the other's orders as
         "lost". Take an exclusive, non-blocking lock file next to the DB for the lifetime
-        of this service; fail fast if another process holds it."""
-        if not isinstance(self.paypal, MockPayPal) or self.store.db_path == ":memory:":
+        of this service; fail fast if another process holds it.
+
+        Fix round 7 (CODEX_REVIEW_4 N2): ownership is keyed on the canonical DB identity,
+        not on the path string. The lock file sits next to the *resolved* DB file, so a
+        symlink / relative / `..` alias of the same file contends for the same lock. A
+        hard link has no single canonical path, so a DB file with more than one link is
+        refused in mock mode (fail closed). After locking, the DB's device/inode are
+        re-checked so the file cannot be swapped between resolving and locking."""
+        if not isinstance(self.paypal, MockPayPal) or self.store.db_path in (":memory:", ""):
             return
         if getattr(self, "_mock_lock", None) is not None:
             return
-        path = f"{self.store.db_path}.mock.lock"
+        real, dev, ino = self.db_identity()
+        if os.stat(real).st_nlink > 1:
+            raise MockLockError(
+                f"PAYPAL_MODE=mock: database {real} has {os.stat(real).st_nlink} hard links; mock "
+                f"ownership cannot be verified across hard links. Use a single path (or Sandbox mode).")
+        path = f"{real}.mock.lock"
         fh = open(path, "a+")
         try:
             try:
@@ -690,13 +773,17 @@ class BuyerService:
                 msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
             fh.close()
+            alias = "" if real == self.store.db_path else f" (resolved from {self.store.db_path})"
             raise MockLockError(
                 f"PAYPAL_MODE=mock is single-process: another GuardRail Buyer process already uses "
-                f"{self.store.db_path} (lock file {path}). Stop it, or use a different DB_PATH. "
+                f"{real}{alias} (lock file {path}). Stop it, or use a different DB_PATH. "
                 f"Do not run mock mode with several workers.") from None
+        if self.db_identity() != (real, dev, ino):  # pragma: no cover - race: file replaced
+            fh.close()
+            raise MockLockError(f"database {self.store.db_path} changed identity while locking; retry")
         fh.seek(0)
         fh.truncate()
-        fh.write(str(os.getpid()))
+        fh.write(f"pid={os.getpid()} dev={dev} ino={ino} db={real}\n")
         fh.flush()
         self._mock_lock = fh
 
@@ -731,22 +818,59 @@ class BuyerService:
                     "FROM decisions d LEFT JOIN approvals a ON a.id=d.approval_id "
                     "LEFT JOIN orders o ON o.id=d.order_id LEFT JOIN orders ao ON ao.id=a.order_id ")
 
-    def list_decisions(self, limit: int = 1000, decision_id: str | None = None) -> list[dict[str, Any]]:
-        """Every guardrail decision, newest first, with the current status of the order /
-        approval it led to (so the audit grid can highlight NEEDS_RECONCILIATION)."""
-        self.expire_stale()
-        limit = max(1, min(int(limit), 5000))
-        where, args = ("WHERE d.id=? ", [decision_id]) if decision_id else ("", [])
+    # compact list projection (CODEX_REVIEW_4 N5): the grid needs no per-rule detail, so
+    # `rules` / `spent_before` stay out of the list and are loaded lazily by decision_detail
+    _LIST_COLS = ("id", "created_at", "stage", "request_id", "product_id", "product_name", "merchant",
+                  "category", "quantity", "amount", "currency", "verdict", "outcome", "rule_hit",
+                  "reasons", "order_id", "approval_id")
+    AUDIT_PAGE_MAX = 5000
+
+    def _decision_rows(self, where: str, args: list[Any], limit: int, compact: bool) -> list[dict[str, Any]]:
+        sel = ", ".join(f"d.{c}" for c in self._LIST_COLS) if compact else "d.*"
+        q = self._DECISIONS_Q.replace("SELECT d.*", f"SELECT {sel}", 1)
         with self.store.lock:
             rows = self.store.conn.execute(
-                self._DECISIONS_Q + where + "ORDER BY d.created_at DESC, d.rowid DESC LIMIT ?",
-                [*args, limit]).fetchall()
+                q + where + "ORDER BY d.created_at DESC, d.rowid DESC LIMIT ?", [*args, limit]).fetchall()
         out = []
         for r in rows:
             d = self.store._decode(dict(r))
             d["risk"] = self._risk(d)
             out.append(d)
         return out
+
+    def list_decisions(self, limit: int = 1000, decision_id: str | None = None) -> list[dict[str, Any]]:
+        """Every guardrail decision, newest first, with the current status of the order /
+        approval it led to (so the audit grid can highlight NEEDS_RECONCILIATION).
+        Full rows (including every rule); the HTTP list uses decisions_page()."""
+        self.expire_stale()
+        limit = max(1, min(int(limit), self.AUDIT_PAGE_MAX))
+        where, args = ("WHERE d.id=? ", [decision_id]) if decision_id else ("", [])
+        return self._decision_rows(where, args, limit, compact=False)
+
+    def decisions_page(self, limit: int = 1000, before_id: str | None = None) -> dict[str, Any]:
+        """One page of the audit log for the dashboard / API (CODEX_REVIEW_4 N5): compact
+        rows, newest first, at most `limit` (1..5000), strictly older than the decision
+        `before_id` (keyset cursor on created_at, rowid: stable while new rows arrive).
+        Returns the TOTAL number of decisions so a client can say "showing N of TOTAL",
+        and `next_before_id` to fetch the next older page (None when exhausted)."""
+        self.expire_stale()
+        limit = max(1, min(int(limit), self.AUDIT_PAGE_MAX))
+        where, args = "", []
+        if before_id:
+            with self.store.lock:
+                cur = self.store.conn.execute("SELECT created_at, rowid FROM decisions WHERE id=?",
+                                              (before_id,)).fetchone()
+            if cur is None:
+                raise KeyError(before_id)
+            where = "WHERE (d.created_at < ? OR (d.created_at = ? AND d.rowid < ?)) "
+            args = [cur[0], cur[0], cur[1]]
+        rows = self._decision_rows(where, args, limit + 1, compact=True)
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        with self.store.lock:
+            total = self.store.conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+        return {"items": rows, "total": total, "limit": limit, "before_id": before_id,
+                "has_more": has_more, "next_before_id": rows[-1]["id"] if has_more and rows else None}
 
     @staticmethod
     def _risk(d: dict[str, Any]) -> str:
@@ -786,15 +910,23 @@ class BuyerService:
                 timeline.append({"at": order.get("updated_at"), "from_status": None,
                                  "to_status": order["status"], "op_gen": order.get("op_gen"),
                                  "note": order.get("paypal_status")})
-        related = []
+        related, related_total = [], 0
         if d.get("request_id"):
+            # bounded + indexed (decisions_req): the first RELATED_MAX decisions of this
+            # request/product, plus the total so the panel can say what it omitted
             with self.store.lock:
                 related = [dict(r) for r in self.store.conn.execute(
                     "SELECT id, created_at, stage, verdict, outcome, rule_hit FROM decisions "
-                    "WHERE request_id=? AND product_id=? ORDER BY created_at, rowid",
-                    (d["request_id"], d["product_id"])).fetchall()]
+                    "WHERE request_id=? AND product_id=? ORDER BY created_at, rowid LIMIT ?",
+                    (d["request_id"], d["product_id"], self.RELATED_MAX)).fetchall()]
+                related_total = self.store.conn.execute(
+                    "SELECT COUNT(*) FROM decisions WHERE request_id=? AND product_id=?",
+                    (d["request_id"], d["product_id"])).fetchone()[0]
         return {"decision": d, "quote": quote, "rules": d.get("rules") or [], "approval": approval,
-                "order": order, "timeline": timeline, "related_decisions": related}
+                "order": order, "timeline": timeline, "related_decisions": related,
+                "related_total": related_total, "as_of": self._ts()}
+
+    RELATED_MAX = 50
 
     def spend_summary(self) -> dict[str, Any]:
         """Today's spend split into captured vs reserved, against the caps."""

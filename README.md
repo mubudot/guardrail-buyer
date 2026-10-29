@@ -126,7 +126,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 196 passed
+python -m pytest -q                                     # -> 213 passed, 1 skipped (jsdom UI test)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -158,12 +158,20 @@ another program, when the port is already taken: it only accepts a `/health` ans
 `GRB_INSTANCE`.
 
 **Mock mode is single-process.** The mock PayPal keeps its orders **in memory**, so only one server process
-may use a database in mock mode: on startup it takes an exclusive lock file next to the DB
-(`$DB_PATH.mock.lock`) and exits with a clear error if another process holds it (do not use
-`uvicorn --workers N` with the mock). Only after taking the lock does it treat open mock orders from a
+may use a database in mock mode: on startup it takes an exclusive lock file next to the **resolved** DB file
+(`realpath($DB_PATH).mock.lock`, so a symlink, relative or `..` alias of the same file contends for the same
+lock; a DB file with several hard links is refused in mock mode) and exits with a clear error if another
+process holds it (do not use `uvicorn --workers N` with the mock). Only after taking the lock does it treat open mock orders from a
 previous run as lost: they are marked `MOCK_RESET` and their reservations released (completed orders stay
 as history). The CLI takes the same lock when `CLI_DB_PATH` points at a file (it refuses, exit code 3, while
 a mock server holds it). Use a fresh `DB_PATH` for a clean demo. Sandbox mode has no such restriction.
+
+**Database upgrades.** The schema is versioned (`PRAGMA user_version`, currently 4). On startup every pending
+migration runs in its own `BEGIN IMMEDIATE … COMMIT` transaction that holds its DDL, its data backfill and the
+version bump, so an interrupted upgrade leaves the DB at the previous version and is redone on the next start.
+Upgrading a DB from an earlier release marks every order then open in `NEEDS_RECONCILIATION` / `CAPTURING`
+as "capture may have happened" (it stays reserved and can only be resolved from PayPal, never cancelled). A DB
+written by a newer version is refused.
 
 **Switching modes.** Exported variables win over `.env`, and the offline block sets `AGENT_MODE`,
 `PAYPAL_MODE` and `GRB_NO_DOTENV=1` (which disables `.env` entirely). Before following the Claude or
@@ -220,7 +228,7 @@ return / cancel links and the mock checkout).
    linked to the approval, awaiting the buyer; `GET /spend` shows `total: 114.98`. Without the token → `401`.
 7. **Or reject it** — **Reject** / `POST /approvals/<APR-id>/reject` → status `REJECTED`, no money moves.
 8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`; without a key: `AGENT_MODE=offline python -m app.cli "…"`, sample in `docs/sample_offline_run.txt`). The CLI starts from an empty in-memory ledger each run. `CLI_DB_PATH=<file>` makes it use a database file; in mock mode the CLI must then own that file exclusively (same lock as the server) and exits with code 3 while a mock server uses it, so do **not** point the CLI at a running mock server's database. Sharing a database between CLI and server works only in Sandbox mode.
-9. **Audit every decision** — open the **Audit** tab (or `curl localhost:8000/decisions`) → one row per guardrail decision: the gift card is a red `deny` (rule hit `merchant_blocklist`/`category_allowlist`), the keyboard an amber `approval` (`per_order_cap`), an order whose payment is unconfirmed is highlighted orange. Filter any column, search with the box, **Export CSV**, and click a row → quote, every rule evaluated and the payment timeline (`CREATING → PAYER_ACTION_REQUIRED → CAPTURING → COMPLETED`). Headless check without a browser: `node scripts/ui_smoke_jsdom.cjs http://127.0.0.1:8000` (needs `npm i jsdom@24`).
+9. **Audit every decision** — open the **Audit** tab (or `curl localhost:8000/decisions`) → one row per guardrail decision: the gift card is a red `deny` (rule hit `merchant_blocklist`/`category_allowlist`), the keyboard an amber `approval` (`per_order_cap`), an order whose payment is unconfirmed is highlighted orange. Filter any column, search with the box, **Export CSV**, and click a row → quote, every rule evaluated and the payment timeline (`CREATING → PAYER_ACTION_REQUIRED → CAPTURING → COMPLETED`). The Audit tab says how much of the history it shows ("Showing newest 1000 of N"); **Load older** pages back with the API cursor; it polls only while the tab is visible, and the open detail refreshes with each poll (labelled with its snapshot time). CSV cells that start with `= + - @` (or tab / CR) are prefixed with `'` so spreadsheets do not evaluate them. Headless check without a browser: `node scripts/ui_smoke_jsdom.cjs http://127.0.0.1:8000` (needs `npm i jsdom@24`); `GRB_JSDOM_NODE_PATH=<that node_modules> pytest tests/test_ui_jsdom.py` runs the Audit-tab regressions (skipped without jsdom).
 
 ### Against the real PayPal Sandbox
 
@@ -279,7 +287,7 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 | POST | `/approvals/{id}/reject` | reject, nothing is paid (same token) |
 | GET | `/paypal/return?token=…` | PayPal redirect after buyer approval → capture |
 | GET | `/paypal/cancel?token=…&state=…` | PayPal redirect on cancel → requires the signed `state` from the order's cancel_url (`403` otherwise); cancels only if still awaiting the buyer |
-| GET | `/decisions` | audit log: every guardrail decision (policy check, create order, approval request, approval execution) with verdict, rule hit, amount, merchant, request id, timestamp and the current status of the order/approval it led to (`?limit=`, newest first) |
+| GET | `/decisions` | audit log: every guardrail decision (policy check, create order, approval request, approval execution) with verdict, rule hit, amount, merchant, request id, timestamp and the current status of the order/approval it led to newest first, compact rows (rules load in the detail). Paged: `{items, total, limit, has_more, next_before_id}`; `?limit=` (1–5000, default 1000), `?before_id=<decision id>` = keyset cursor for older decisions |
 | GET | `/decisions/{id}` | one decision: quote, every rule evaluated (PASS / DENY / NEEDS_APPROVAL / WAIVED / SKIPPED), approval, and the order's payment timeline (status transitions) |
 | GET | `/spend` | today's captured / reserved / remaining vs caps |
 | GET | `/policy` | active policy + today's spend |
@@ -292,7 +300,7 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 | Env var | Default | Notes |
 |---|---|---|
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | any Messages-API-compatible endpoint |
-| `ANTHROPIC_API_KEY` | – | sent as `x-api-key` if set |
+| `ANTHROPIC_API_KEY` | – | sent as `x-api-key` if set; leave unset behind a gateway that injects auth on the wire |
 | `MODEL` | `claude-sonnet-5-5` | |
 | `AGENT_MODE` | `claude` | `offline` = deterministic rule-based parser, no AI and no key (for judges / CI) |
 | `PAYPAL_MODE` | `mock` | `sandbox` uses the real PayPal Sandbox |
@@ -355,9 +363,14 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
   reports it `COMPLETED`, declined or `VOIDED`; if PayPal no longer returns the order at all, resolve it by
   hand.
 - **Mock PayPal state is in memory and mock mode is single-process** (reviews B9/N3): an exclusive lock
-  file next to the DB enforces one mock server per database. See the offline block above.
-- **Upgrading a database from an older version** (before `capture_unknown` existed) is conservative: every
-  order that was `NEEDS_RECONCILIATION` or `CAPTURING` is treated as "a capture may have happened", so it
+  file next to the resolved DB file enforces one mock server per database (aliases included; hard-linked DB
+  files are refused). See the offline block above.
+- **Audit history in the dashboard is paged**: the grid loads the newest 1000 decisions and older pages on
+  request; search, filters and CSV export cover the loaded rows (the label says how many of the total).
+  Older loaded rows are not re-polled; there is no retention/pruning of the audit log yet.
+- **Upgrading a database from an older release** (any DB without `PRAGMA user_version` 4, including DBs
+  already opened by rounds 5/6) is conservative: every order that was `NEEDS_RECONCILIATION` or
+  `CAPTURING` at upgrade time is treated as "a capture may have happened", so it
   stays reserved and can no longer be cancelled or expired, only resolved forward with
   `POST /orders/{id}/reconcile` once PayPal reports it `COMPLETED`, declined or `VOIDED`. Stop all servers
   before upgrading, and back up the `.db` file first. Older orders get no audit timeline (the detail panel

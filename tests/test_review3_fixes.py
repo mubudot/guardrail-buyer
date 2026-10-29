@@ -219,7 +219,7 @@ def _client(service):
 def test_every_decision_is_persisted(service):
     c = _client(service)
     c.post("/agent/request", json={"request": DEMO})
-    rows = c.get("/decisions").json()
+    rows = c.get("/decisions").json()["items"]
     by = {(r["product_id"], r["stage"]): r for r in rows}
     assert by[("P-1001", "order")]["verdict"] == "ALLOW" and by[("P-1001", "order")]["outcome"] == "RESERVED"
     assert by[("P-1001", "order")]["order_id"] and by[("P-1001", "order")]["risk"] == "ALLOW"
@@ -232,7 +232,8 @@ def test_every_decision_is_persisted(service):
     assert by[("P-1001", "check")]["stage"] == "check"  # read-only checks are audited too
     for r in rows:
         assert r["id"].startswith("DEC-") and r["request_id"] and r["created_at"] and r["merchant"]
-        assert r["amount"] and isinstance(r["rules"], list) and r["rules"]
+        assert r["amount"] and "rules" not in r  # compact list (round 7 N5): rules load lazily
+        assert c.get(f"/decisions/{r['id']}").json()["rules"]
     # newest first
     assert [r["created_at"] for r in rows] == sorted((r["created_at"] for r in rows), reverse=True)
 
@@ -241,7 +242,7 @@ def test_decision_detail_has_quote_rules_and_timeline(service):
     service.paypal.require_payer_approval = True
     c = _client(service)
     c.post("/agent/request", json={"request": "Buy 2 USB-C cables"})
-    dec = next(r for r in c.get("/decisions").json() if r["stage"] == "order")
+    dec = next(r for r in c.get("/decisions").json()["items"] if r["stage"] == "order")
     d = c.get(f"/decisions/{dec['id']}").json()
     assert d["quote"] == {"product_id": "P-1001", "quantity": 2, "amount": "25.98", "currency": "USD",
                           "merchant": "Sandbox Electronics", "category": "office-supplies"}
@@ -265,11 +266,11 @@ def test_approval_execution_is_audited_and_linked(service):
     c.post("/agent/request", json={"request": "a mechanical keyboard"})
     aid = c.get("/approvals?status=PENDING").json()[0]["id"]
     c.post(f"/approvals/{aid}/approve", headers={"X-Approver-Token": "t"})
-    rows = c.get("/decisions").json()
+    rows = c.get("/decisions").json()["items"]
     ex = next(r for r in rows if r["stage"] == "approval_execute")
     assert ex["verdict"] == "ALLOW" and ex["rule_hit"] == "human_approval" and ex["approval_id"] == aid
     assert ex["order_status"] == "COMPLETED"
-    waived = {r["rule"]: r["outcome"] for r in ex["rules"]}
+    waived = {r["rule"]: r["outcome"] for r in c.get(f"/decisions/{ex['id']}").json()["rules"]}
     assert waived["per_order_cap"] == "WAIVED"
     req = next(r for r in rows if r["stage"] == "approval_request")
     d = c.get(f"/decisions/{req['id']}").json()  # the request links to the order its approval created
@@ -290,7 +291,7 @@ def test_reconciliation_risk_highlight(service):
     service.paypal.capture_order = boom
     service.paypal.get_order = boom
     assert service.capture(o["id"])["status"] == "NEEDS_RECONCILIATION"
-    row = next(r for r in c.get("/decisions").json() if r["stage"] == "order")
+    row = next(r for r in c.get("/decisions").json()["items"] if r["stage"] == "order")
     assert row["order_status"] == "NEEDS_RECONCILIATION" and row["risk"] == "NEEDS_RECONCILIATION"
 
 
