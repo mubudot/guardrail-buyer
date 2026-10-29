@@ -1,0 +1,19 @@
+# GuardRail Buyer spend policy (demo values, Sandbox only)
+currency: USD
+per_order_cap: 50          # orders above this need human approval
+daily_cap: 150             # cumulative spend per day above this needs human approval
+hard_max_per_order: 500    # orders above this are always denied
+timezone: UTC              # day boundary for the daily cap
+allowed_categories:
+  - office-supplies
+  - software
+  - food
+  - furniture
+allowed_merchants:
+  - Sandbox Electronics
+  - Sandbox Furniture Co
+  - Paper & Co Sandbox
+  - Sandbox Roasters
+  - Sandbox Cloud
+blocked_merchants:
+  - Shady Gifts Sandbox

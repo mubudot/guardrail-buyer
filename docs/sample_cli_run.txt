@@ -1,0 +1,20 @@
+[user] We need coffee beans and snacks for Friday's team meeting, 3 bags of beans and 2 snack boxes.
+
+[assistant] I'm GuardRail Buyer, a purchasing agent for a small team. I'll find coffee beans and snacks in the catalog, check the spend policy, and place the order.
+
+  [tool] search_catalog({"query": "coffee beans"}) -> 1 products
+  [tool] search_catalog({"query": "snacks"}) -> 1 products
+  [tool] check_policy({"product_id": "P-3001", "quantity": 3}) -> NEEDS_APPROVAL
+  [tool] check_policy({"product_id": "P-3002", "quantity": 2}) -> NEEDS_APPROVAL
+  [tool] request_approval({"justification": "3 bags of coffee beans for Friday team meeting", "product_id": "P-3001", "quantity": 3}) -> APPROVAL_REQUESTED
+  [tool] request_approval({"justification": "2 boxes of snacks for Friday team meeting", "product_id": "P-3002", "quantity": 2}) -> APPROVAL_REQUESTED
+[assistant] **Summary:**
+
+**Awaiting approval:**
+- Approval ID APR-5185624F: 3 bags Team Coffee Beans 1kg, $84.00
+- Approval ID APR-ECD6B972: 2 boxes Assorted Snacks, $70.00
+
+Both orders exceed the $50 per-order cap. A human must approve them before purchase.
+
+turns=4 usage={'input_tokens': 6470, 'output_tokens': 359} stop=end_turn
+spent_today=0.00 pending_approvals=2

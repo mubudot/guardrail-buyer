@@ -1,0 +1,15 @@
+[
+  {"id": "P-1001", "name": "USB-C Charging Cable 2m", "merchant": "Sandbox Electronics", "category": "office-supplies", "price": "12.99", "currency": "USD"},
+  {"id": "P-1002", "name": "Wireless Mouse", "merchant": "Sandbox Electronics", "category": "office-supplies", "price": "24.50", "currency": "USD"},
+  {"id": "P-1003", "name": "Mechanical Keyboard", "merchant": "Sandbox Electronics", "category": "office-supplies", "price": "89.00", "currency": "USD"},
+  {"id": "P-1004", "name": "27-inch 4K Monitor", "merchant": "Sandbox Electronics", "category": "office-supplies", "price": "329.00", "currency": "USD"},
+  {"id": "P-1005", "name": "Ergonomic Office Chair", "merchant": "Sandbox Furniture Co", "category": "furniture", "price": "640.00", "currency": "USD"},
+  {"id": "P-2001", "name": "A4 Printer Paper (500 sheets)", "merchant": "Paper & Co Sandbox", "category": "office-supplies", "price": "7.49", "currency": "USD"},
+  {"id": "P-2002", "name": "Sticky Notes 12-pack", "merchant": "Paper & Co Sandbox", "category": "office-supplies", "price": "9.99", "currency": "USD"},
+  {"id": "P-3001", "name": "Team Coffee Beans 1kg", "merchant": "Sandbox Roasters", "category": "food", "price": "28.00", "currency": "USD"},
+  {"id": "P-3002", "name": "Box of Assorted Snacks", "merchant": "Sandbox Roasters", "category": "food", "price": "35.00", "currency": "USD"},
+  {"id": "P-4001", "name": "Cloud Hosting Credit $20", "merchant": "Sandbox Cloud", "category": "software", "price": "20.00", "currency": "USD"},
+  {"id": "P-4002", "name": "Design Tool Annual License", "merchant": "Sandbox Cloud", "category": "software", "price": "120.00", "currency": "USD"},
+  {"id": "P-5001", "name": "Gift Card $100", "merchant": "Shady Gifts Sandbox", "category": "gift-cards", "price": "100.00", "currency": "USD"},
+  {"id": "P-5002", "name": "Crypto Voucher $50", "merchant": "Shady Gifts Sandbox", "category": "gift-cards", "price": "50.00", "currency": "USD"}
+]
