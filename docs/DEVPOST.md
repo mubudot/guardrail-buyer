@@ -91,9 +91,10 @@ click any row to see the quote, each rule evaluated and the payment timeline.
 
 - Natural-language request → policy → real PayPal Sandbox order works live, together with approvals
   and refusals in the same run; live Sandbox status, capture-before-approval refusal and cancel are
-  verified (`docs/sandbox_smoke_run.txt`). *Pending:* the final step (a Sandbox personal buyer approves and
-  the order is captured) is tested against the mock and a wire-format fake of the Sandbox API, but a
-  real Sandbox buyer test has not been recorded yet.
+  verified (`docs/sandbox_smoke_run.txt`). The full loop was verified for real on 2026-10-30: Claude placed
+  the order, a Sandbox personal test buyer logged in and paid on PayPal, PayPal redirected back, and the app
+  captured it. App and PayPal both report `COMPLETED`, capture `8VA9873790040992M` (`docs/SANDBOX_E2E.md`,
+  with screenshots).
 - The guardrails are boring in the best way: deterministic and tested. The model can only call four
   tools; it never chooses prices or merchants (they come from the server catalog), cannot escalate a
   DENY, cannot reuse an approval or change its amount, and cannot get around the caps by firing

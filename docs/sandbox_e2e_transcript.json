@@ -1,0 +1,101 @@
+{
+  "request_id": "REQ-98824ED24A",
+  "turns": 4,
+  "stopped_reason": "end_turn",
+  "usage": {
+    "input_tokens": 6748,
+    "output_tokens": 217
+  },
+  "final_text": "- Bought: 2x USB-C Charging Cable 2m (Order ORD-CD1A3AB5C1, $25.98 USD)\n- Awaiting payer approval: PayPal order 34M919590A962473E at https://www.sandbox.paypal.com/checkoutnow?token=34M919590A962473E before capture\n- Nothing refused",
+  "transcript": [
+    {
+      "role": "user",
+      "text": "Order 2 USB-C cables for the new hire's desk"
+    },
+    {
+      "role": "tool",
+      "name": "search_catalog",
+      "input": {
+        "query": "USB-C cable"
+      },
+      "output": {
+        "products": [
+          {
+            "id": "P-1001",
+            "name": "USB-C Charging Cable 2m",
+            "merchant": "Sandbox Electronics",
+            "category": "office-supplies",
+            "price": "12.99",
+            "currency": "USD"
+          }
+        ]
+      }
+    },
+    {
+      "role": "tool",
+      "name": "check_policy",
+      "input": {
+        "product_id": "P-1001",
+        "quantity": 2
+      },
+      "output": {
+        "product_id": "P-1001",
+        "product_name": "USB-C Charging Cable 2m",
+        "quantity": 2,
+        "amount": "25.98",
+        "currency": "USD",
+        "spent_today": "0.00",
+        "verdict": "ALLOW",
+        "reasons": [
+          "within caps: 25.98 <= 50.00, today 25.98 <= 150.00"
+        ]
+      }
+    },
+    {
+      "role": "tool",
+      "name": "create_order",
+      "input": {
+        "product_id": "P-1001",
+        "quantity": 2
+      },
+      "output": {
+        "result": "AWAITING_PAYER_APPROVAL",
+        "order": {
+          "id": "ORD-CD1A3AB5C1",
+          "product_id": "P-1001",
+          "product_name": "USB-C Charging Cable 2m",
+          "merchant": "Sandbox Electronics",
+          "category": "office-supplies",
+          "quantity": 2,
+          "amount": "25.98",
+          "currency": "USD",
+          "status": "PAYER_ACTION_REQUIRED",
+          "paypal_order_id": "34M919590A962473E",
+          "paypal_status": "PAYER_ACTION_REQUIRED",
+          "capture_id": null,
+          "approval_id": null,
+          "decision": {
+            "verdict": "ALLOW",
+            "reasons": [
+              "within caps: 25.98 <= 50.00, today 25.98 <= 150.00"
+            ]
+          },
+          "created_at": "2026-10-29T20:45:38+00:00",
+          "approve_url": "https://www.sandbox.paypal.com/checkoutnow?token=34M919590A962473E",
+          "updated_at": "2026-10-29T20:45:39+00:00",
+          "request_id": "REQ-98824ED24A",
+          "op_gen": 2,
+          "capture_unknown": 0
+        },
+        "verdict": "ALLOW",
+        "reasons": [
+          "within caps: 25.98 <= 50.00, today 25.98 <= 150.00"
+        ]
+      }
+    },
+    {
+      "role": "assistant",
+      "text": "<summary>\n- Bought: 2x USB-C Charging Cable 2m (Order ORD-CD1A3AB5C1, $25.98 USD)\n- Awaiting payer approval: PayPal order 34M919590A962473E at https://www.sandbox.paypal.com/checkoutnow?token=34M919590A962473E before capture\n- Nothing refused\n</summary>"
+    }
+  ]
+}

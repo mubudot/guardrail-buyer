@@ -250,6 +250,10 @@ approved is refused by PayPal (`422 ORDER_NOT_APPROVED` → the app answers `409
 and budget reservation unchanged), and cancels them so the reservation is released. Sample output:
 `docs/sandbox_smoke_run.txt`.
 
+**Verified end to end (2026-10-30):** real Claude agent → real Sandbox order → a Sandbox personal test buyer logs in
+and pays on `www.sandbox.paypal.com` → `/paypal/return` → capture `COMPLETED` (PayPal order `34M919590A962473E`,
+capture `8VA9873790040992M`). Timeline, API checks and screenshots: [`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md).
+
 To finish a payment, click **Pay with PayPal**, log in with a Sandbox *personal* test account (Testing
 Tools → Sandbox Accounts in the developer dashboard) and pay → PayPal redirects to `/paypal/return`, the
 order is captured and shows `COMPLETED` with its capture id. If that redirect is lost (e.g. the app
@@ -384,9 +388,9 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
   quantity or item selection; it is only screened against a short list of condition/negation words (a
   denylist, so it is not a complete guarantee that unusual wording there is meaningless to a human
   reader). Verb, quantity and item are validated positively.
-- **A full real Sandbox buyer approval + capture is not yet recorded.** Live Sandbox runs so far cover order
-  creation, live status, capture-before-approval refusal and cancel (`docs/sandbox_smoke_run.txt`); the
-  buyer-approval → capture loop is tested against the mock and a wire-format fake of the Sandbox API.
+- **The real Sandbox buyer approval → capture loop was verified once by hand (2026-10-30)**: one order, a single
+  Sandbox personal test buyer, the redirect through a tunnel ([`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md)). The
+  automated tests still exercise this loop only against the mock and a wire-format fake of the Sandbox API.
 
 ## AI tools used
 

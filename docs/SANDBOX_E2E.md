@@ -1,0 +1,75 @@
+# Real PayPal Sandbox end-to-end run: agent → buyer approval → capture
+
+- **Date:** 2026-10-30, 04:45–04:50 Asia/Taipei (2026-10-29 20:45–20:50 UTC), code at `734cf34`.
+- **Result:** the order was created by the real Claude agent, a Sandbox **personal** test buyer logged in on
+  `www.sandbox.paypal.com` and clicked **Pay**, PayPal redirected to the app's `/paypal/return`, and the app
+  captured the payment. App and PayPal both report **`COMPLETED`**. It worked on the first attempt, with no retries and no manual capture call.
+
+| | |
+|---|---|
+| App order | `ORD-CD1A3AB5C1` (request `REQ-98824ED24A`) |
+| Item | 2 × USB-C Charging Cable 2m (P-1001, Sandbox Electronics, office-supplies), **$25.98 USD** |
+| Policy | `ALLOW`: within caps, 25.98 ≤ 50.00 per order, today 25.98 ≤ 150.00 (all 8 rules PASS) |
+| PayPal order | `34M919590A962473E` (Orders v2, `intent: CAPTURE`) |
+| PayPal capture | **`8VA9873790040992M`**, status `COMPLETED`, `final_capture: true`, 25.98 USD |
+| Payer | Sandbox personal test account `sb-ztzi053613384@personal.example.com` |
+
+## Configuration
+
+`PAYPAL_MODE=sandbox PAYPAL_AUTH=proxy` (an egress proxy adds Basic auth for `api-m.sandbox.paypal.com`, so the
+app held no PayPal credentials), `AGENT_MODE=claude MODEL=claude-sonnet-5-5` through a Messages-API-compatible
+gateway (auth also added by the gateway), a random `APPROVER_TOKEN`, a fresh temporary `DB_PATH`, and `GRB_NO_DOTENV=1`.
+The app ran on `127.0.0.1` behind a `cloudflared` quick tunnel, and `PUBLIC_BASE_URL` was set to the tunnel URL, so
+PayPal's `return_url`/`cancel_url` reached it. The tunnel is gone now. No secret, token, or test-account password is
+in this repo.
+
+## Timeline (from the app's audit API, `GET /decisions/DEC-BE9338ACE6`)
+
+| UTC | Transition | Note |
+|---|---|---|
+| 20:45:35 | policy check (`check_policy`, DEC-E71309867E) | ALLOW |
+| 20:45:38 | → `CREATING` (DEC-BE9338ACE6, outcome RESERVED) | reserved 25.98 USD |
+| 20:45:39 | `CREATING` → `PAYER_ACTION_REQUIRED` | PayPal order created, `payer-action` link returned |
+| (buyer) | Sandbox login + review + **Pay** | see screenshots 1–2 |
+| 20:49:38 | `PAYER_ACTION_REQUIRED` → `CAPTURING` | `GET /paypal/return?token=34M919590A962473E&PayerID=…` → 303 |
+| 20:49:39 | `CAPTURING` → `COMPLETED` | capture `8VA9873790040992M` |
+
+## Agent run (Claude, real model)
+
+Request: *"Order 2 USB-C cables for the new hire's desk"*. 4 model turns, `stop_reason=end_turn`, 6,748 input +
+217 output tokens. Tool calls: `search_catalog("USB-C cable")` → `check_policy(P-1001 × 2)` = ALLOW →
+`create_order(P-1001 × 2)` = `AWAITING_PAYER_APPROVAL`. Full transcript:
+[`sandbox_e2e_transcript.json`](sandbox_e2e_transcript.json).
+
+## Verification after the redirect
+
+- `GET /orders/ORD-CD1A3AB5C1` returned `status: COMPLETED`, `paypal_status: COMPLETED`, `paypal_live_status: COMPLETED`,
+  `capture_id: 8VA9873790040992M`, `capture_unknown: 0`, `op_gen: 4`.
+- `GET /spend` returned `captured: 25.98`, `reserved: 0.00`, `total: 25.98`, `remaining: 124.02`, `needs_reconciliation: 0`
+  (the reservation became captured spend).
+- `GET /decisions` returned 2 rows (policy check ALLOW, create order RESERVED → order status COMPLETED).
+- Read straight from PayPal, `GET https://api-m.sandbox.paypal.com/v2/checkout/orders/34M919590A962473E` returned `status: COMPLETED`,
+  `intent: CAPTURE`, `purchase_units[0].payments.captures[0]` = `8VA9873790040992M` / `COMPLETED` / 25.98 USD /
+  `final_capture: true`, and payer `sb-ztzi053613384@personal.example.com`.
+
+## Screenshots (`docs/screenshots/`)
+
+1. `sandbox_e2e_1_paypal_login.png`: the Sandbox checkout login with the test buyer's email entered, before the password.
+2. `sandbox_e2e_2_review_pay.png`: the review page showing $25.98, Pay in full (fake Sandbox funding sources).
+3. `sandbox_e2e_3_return_completed.png`: the app right after PayPal's redirect. Toast reads "Payment returned from PayPal: ORD-CD1A3AB5C1 → COMPLETED".
+4. `sandbox_e2e_4_operations.png`: the Operations tab: order COMPLETED, capture id, spend cards ($25.98 captured, $0.00 reserved).
+5. `sandbox_e2e_5_audit_detail.png`: the Audit tab with the decision detail (quote, verdict, reasons).
+6. `sandbox_e2e_6_audit_timeline.png`: the decision detail scrolled to the rules and the payment timeline (CREATING → … → COMPLETED).
+
+## UI notes from this first real-browser pass (1920×1440 viewport)
+
+- In the Operations → Orders grid, the **Payment / capture** column is slightly too narrow, so the capture id is cut off
+  (`8VA98737900409…`). The Item column also shortens "USB-C Charging …".
+- The Audit grid is wider than its card. Outcome and Payment status sit off to the right and need a horizontal scroll that
+  is easy to miss, and opening the detail panel hides them completely.
+- The header badge says "approver token on" while the Approver token input is empty. This is correct (the server
+  requires a token and the user has not typed one), but a first-time viewer may find it confusing.
+- The detail panel scrolls internally without problems, auto-refresh works ("Snapshot …" updates), the empty state looks
+  right, and nothing overlaps. The browser console was not inspected.
+- The agent's summary line says "Bought:" for an order that is still waiting for the payer. It is accurate after capture
+  but early before it.
