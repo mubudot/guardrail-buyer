@@ -59,3 +59,31 @@ def test_agent_tool_errors_are_returned_not_raised(service):
 def test_model_from_env(service, monkeypatch):
     monkeypatch.setenv("MODEL", "claude-test")
     assert PurchasingAgent(service, post=lambda p: {}).model == "claude-test"
+
+
+def test_cli_prints_clean_summary_and_uses_memory_db(monkeypatch, capsys, tmp_path):
+    import app.agent as agent_mod
+    from app import cli
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "server.db"))  # server DB must not be touched
+    monkeypatch.delenv("CLI_DB_PATH", raising=False)
+    monkeypatch.setenv("PAYPAL_MODE", "mock")
+    resp = [{"stop_reason": "tool_use", "usage": {"input_tokens": 1, "output_tokens": 1},
+             "content": [tool_use(1, "create_order", {"product_id": "P-1001", "quantity": 1})]},
+            {"stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1},
+             "content": [{"type": "text", "text": "<summary>- cable bought</summary>"}]}]
+    monkeypatch.setattr(agent_mod, "anthropic_post", scripted(resp))
+    assert cli.main(["a cable"]) == 0
+    out = capsys.readouterr().out
+    assert "- cable bought" in out and "<summary>" not in out
+    assert not (tmp_path / "server.db").exists()
+
+
+def test_empty_final_message_falls_back_to_tool_results(service):
+    post = scripted([
+        {"stop_reason": "tool_use", "usage": {},
+         "content": [tool_use(1, "request_approval", {"product_id": "P-1003", "quantity": 1, "justification": "j"}),
+                     tool_use(2, "create_order", {"product_id": "P-5001", "quantity": 1})]},
+        {"stop_reason": "end_turn", "usage": {}, "content": [{"type": "text", "text": "<summary></summary>"}]},
+    ])
+    res = PurchasingAgent(service, post=post).run("keyboard and gift card")
+    assert "needs human approval (APR-" in res.final_text and "P-5001: refused" in res.final_text

@@ -77,10 +77,13 @@ cp .env.example .env               # then put your Anthropic key in ANTHROPIC_AP
 `.env` is loaded automatically (python-dotenv); real environment variables win.
 The defaults run with a **mock PayPal** (no PayPal account, no network). Only the agent
 steps (4 and 8 below) need an Anthropic API key; tests and every other step work without one.
+Run all commands from the repository root with the venv active (paths in `.env` are relative).
+The commands below use bash syntax (`VAR=value cmd`); on Windows set the variables in `.env` instead.
+If you serve on a port other than 8000, also set `PUBLIC_BASE_URL` (used for the PayPal return links).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `55 passed` (no network, no API key needed).
+1. **Run the tests** — `python -m pytest -q` → see `56 passed` (no network, no API key needed).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -100,7 +103,7 @@ steps (4 and 8 below) need an Anthropic API key; tests and every other step work
    `curl -X POST -H 'X-Approver-Token: demo' localhost:8000/approvals/<APR-id>/approve` → a new order
    linked to the approval, awaiting the buyer; `GET /spend` shows `total: 114.98`. Without the token → `401`.
 7. **Or reject it** — **Reject** / `POST /approvals/<APR-id>/reject` → status `REJECTED`, no money moves.
-8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`).
+8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`). The CLI starts from an empty in-memory ledger each run (`CLI_DB_PATH=guardrail.db` to share the server's).
 
 ### Against the real PayPal Sandbox
 

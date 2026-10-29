@@ -72,15 +72,15 @@ function payCell(p) {
 }
 const ordersGrid = agGrid.createGrid($("orders"), {
   columnDefs: [
-    {field: "created_at", headerName: "Time", width: 90, suppressSizeToFit: true, valueFormatter: time, sort: "desc"},
-    {field: "id", headerName: "Order", width: 145, suppressSizeToFit: true},
-    {field: "product_name", headerName: "Item", flex: 1, minWidth: 170},
+    {field: "created_at", headerName: "Time", width: 100, suppressSizeToFit: true, valueFormatter: time, sort: "desc"},
+    {field: "id", headerName: "Order", width: 160, suppressSizeToFit: true},
+    {field: "product_name", headerName: "Item", flex: 1, minWidth: 150},
     {field: "quantity", headerName: "Qty", minWidth: 60, maxWidth: 65},
     {field: "amount", headerName: "Amount", minWidth: 90, maxWidth: 95, valueFormatter: (p) => usd(p.value)},
     {headerName: "Policy", minWidth: 110, maxWidth: 115, valueGetter: (p) => p.data.approval_id ? "APPROVED" : (p.data.decision || {}).verdict,
       cellRenderer: statusCell},
     {field: "status", headerName: "Status", minWidth: 140, maxWidth: 150, cellRenderer: statusCell},
-    {field: "paypal_order_id", headerName: "PayPal order", minWidth: 160},
+    {field: "paypal_order_id", headerName: "PayPal order", width: 195, suppressSizeToFit: true},
     {headerName: "Payment / capture", minWidth: 160, cellRenderer: payCell, sortable: false},
   ],
   rowData: [], overlayNoRowsTemplate: "No orders yet: ask the agent above",

@@ -76,6 +76,30 @@ def extract_summary(text: str) -> str:
     return m.group(1).strip() if m else strip_intro(text).strip()
 
 
+def fallback_summary(transcript: list[dict[str, Any]]) -> str:
+    """Deterministic summary built from tool results, used when the model's final
+    message is empty (seen live: an empty <summary> after parallel tool calls)."""
+    lines = []
+    for t in transcript:
+        if t.get("role") != "tool" or t.get("name") not in ("create_order", "request_approval"):
+            continue
+        out, inp = t.get("output") or {}, t.get("input") or {}
+        what = f"{inp.get('quantity', 1)} x {inp.get('product_id')}"
+        r = out.get("result")
+        o = out.get("order") or {}
+        if r == "ORDER_PLACED":
+            lines.append(f"- {what}: bought, order {o.get('id')} ${o.get('amount')}")
+        elif r == "AWAITING_PAYER_APPROVAL":
+            lines.append(f"- {what}: order {o.get('id')} ${o.get('amount')} awaits payer approval at {o.get('approve_url')}")
+        elif r == "APPROVAL_REQUESTED":
+            lines.append(f"- {what}: needs human approval ({out.get('approval_id')}): {'; '.join(out.get('reasons', []))}")
+        elif r == "DENIED":
+            lines.append(f"- {what}: refused: {'; '.join(out.get('reasons', []))}")
+        elif r == "FAILED":
+            lines.append(f"- {what}: PayPal order failed: {o.get('error') or o.get('paypal_status')}")
+    return "\n".join(lines)
+
+
 def strip_intro(text: str) -> str:
     """Remove a leading self-introduction sentence the model sometimes adds anyway."""
     out = _INTRO_RE.sub("", text, count=1)
@@ -157,7 +181,7 @@ class PurchasingAgent:
                 res.transcript.append({"role": "assistant", "text": "\n".join(texts)})
             tool_uses = [b for b in content if b.get("type") == "tool_use"]
             if resp.get("stop_reason") != "tool_use" or not tool_uses:
-                res.final_text = extract_summary("\n".join(texts))
+                res.final_text = extract_summary("\n".join(texts)) or fallback_summary(res.transcript)
                 res.stopped_reason = resp.get("stop_reason", "")
                 return res
             results = []
