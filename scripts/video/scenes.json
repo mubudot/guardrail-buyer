@@ -1,0 +1,15 @@
+{
+  "voice_note": "Piper TTS, voice en_US-libritts_r-medium (dataset LibriTTS-R, CC BY 4.0). No music.",
+  "scenes": [
+    {"id": "s1_title", "narration": "AI agents are starting to buy things for us. But handing an agent your PayPal account is risky. GuardRail Buyer lets an AI agent shop for your team and pay with PayPal, but only inside the spend limits you set."},
+    {"id": "s2_policy", "narration": "Between the language model and the wallet sits a deterministic policy engine. Orders under the per-order cap and the daily budget go straight to PayPal. Anything over a cap waits for a human. Blocked merchants, blocked categories, and anything above a hard maximum are refused outright. The model cannot argue its way past that."},
+    {"id": "s3_dashboard", "narration": "This is the dashboard, built with AG Grid, running against the real PayPal Sandbox. Up top: today's captured spend, money reserved for unpaid orders, and the remaining daily headroom."},
+    {"id": "s4_ask", "narration": "Let's ask the agent, Claude, for a mixed order: two USB-C cables and a mechanical keyboard for a new hire, plus a one hundred dollar gift card. The agent searches the catalog, dry-runs the policy, and places orders through our server. It never calls PayPal directly."},
+    {"id": "s4_result", "narration": "The cables fit the policy, so a real PayPal Sandbox order is created and the budget is reserved. The keyboard is over the fifty dollar per-order cap, so the agent files an approval request with its justification. The gift card is refused: blocked merchant and category."},
+    {"id": "s5_checkout", "narration": "Pay with PayPal opens the real PayPal Sandbox checkout for that order. The buyer logs in with a Sandbox test account and approves the payment."},
+    {"id": "s5_return", "narration": "PayPal redirects back to our app, which captures the payment. The order turns completed, with its PayPal capture ID, and the reserved amount becomes captured spend."},
+    {"id": "s6_approve", "narration": "Now the human in the loop. The keyboard request shows the agent's justification and exactly which rule it hit. With the approver token, I approve it. The server re-checks the deny rules, then creates a new PayPal order for the buyer."},
+    {"id": "s7_cancel", "narration": "Unpaid orders count against the daily budget, so an agent cannot open lots of small orders to dodge the cap. If the buyer cancels on PayPal, the reservation is released. And a capture attempted before the buyer approves is rejected by PayPal, and changes nothing."},
+    {"id": "s8_close", "narration": "GuardRail Buyer is built with Claude tool use, PayPal Orders version two in the Sandbox, FastAPI, and AG Grid. It is open source, with sixty-eight tests, and an offline mode lets judges run the whole flow without an AI key. Let agents spend, inside your guardrails."}
+  ]
+}

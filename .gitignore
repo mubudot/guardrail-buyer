@@ -8,3 +8,5 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+build/
+docs/demo_draft.mp4
