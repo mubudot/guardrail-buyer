@@ -56,3 +56,4 @@ body.checkout { display: grid; place-items: center; min-height: 100vh; }
 .checkout .amount { font-size: 28px; font-weight: 700; }
 .checkout .btn { display: block; margin-top: 10px; }
 @media (max-width: 800px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+.pill.offline { background: #fff4d6; color: #7a5200; border-color: #e8c66a; font-weight: 600; }

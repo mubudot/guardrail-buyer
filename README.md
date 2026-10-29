@@ -75,15 +75,26 @@ cp .env.example .env               # then put your Anthropic key in ANTHROPIC_AP
 ```
 
 `.env` is loaded automatically (python-dotenv); real environment variables win.
-The defaults run with a **mock PayPal** (no PayPal account, no network). Only the agent
-steps (4 and 8 below) need an Anthropic API key; tests and every other step work without one.
+The defaults run with a **mock PayPal** (no PayPal account, no network). The agent steps
+(4 and 8 below) use Claude and need an Anthropic API key — **or** set `AGENT_MODE=offline`.
+
+> **No AI key? Use the offline agent mode.** `AGENT_MODE=offline` swaps Claude for a small
+> deterministic, rule-based parser (`app/offline_agent.py`, clearly **not** AI) that understands
+> simple shopping lists over the demo catalog ("2 USB-C cables, a mechanical keyboard and a $100
+> gift card"). It calls the *same* tools through the *same* `BuyerService`, so every guardrail,
+> PayPal order, approval and refusal behaves exactly as with Claude; the dashboard header shows
+> **OFFLINE rule-based agent (no AI)**. Claude remains the default and handles free-form requests.
+>
+> ```bash
+> AGENT_MODE=offline APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000
+> ```
 Run all commands from the repository root with the venv active (paths in `.env` are relative).
 The commands below use bash syntax (`VAR=value cmd`); on Windows set the variables in `.env` instead.
 If you serve on a port other than 8000, also set `PUBLIC_BASE_URL` (used for the PayPal return links).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `57 passed` (no network, no API key needed).
+1. **Run the tests** — `python -m pytest -q` → see `68 passed` (no network, no API key needed).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -103,7 +114,7 @@ If you serve on a port other than 8000, also set `PUBLIC_BASE_URL` (used for the
    `curl -X POST -H 'X-Approver-Token: demo' localhost:8000/approvals/<APR-id>/approve` → a new order
    linked to the approval, awaiting the buyer; `GET /spend` shows `total: 114.98`. Without the token → `401`.
 7. **Or reject it** — **Reject** / `POST /approvals/<APR-id>/reject` → status `REJECTED`, no money moves.
-8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`). The CLI starts from an empty in-memory ledger each run (`CLI_DB_PATH=guardrail.db` to share the server's).
+8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`; without a key: `AGENT_MODE=offline python -m app.cli "…"`, sample in `docs/sample_offline_run.txt`). The CLI starts from an empty in-memory ledger each run (`CLI_DB_PATH=guardrail.db` to share the server's).
 
 ### Against the real PayPal Sandbox
 
@@ -164,6 +175,7 @@ Edit `policy.yaml` (or point `POLICY_PATH` at a `.json` file) and restart. Examp
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | any Messages-API-compatible endpoint |
 | `ANTHROPIC_API_KEY` | – | sent as `x-api-key` if set |
 | `MODEL` | `claude-sonnet-5-5` | |
+| `AGENT_MODE` | `claude` | `offline` = deterministic rule-based parser, no AI and no key (for judges / CI) |
 | `PAYPAL_MODE` | `mock` | `sandbox` uses the real PayPal Sandbox |
 | `PAYPAL_MOCK_APPROVAL` | `0` | mock only: `1` = orders wait for a simulated buyer approval |
 | `PAYPAL_AUTH` | `oauth` | `oauth`: client id + secret → OAuth2 token → Bearer. `proxy`: no credentials in the app, an egress proxy injects `Authorization: Basic` |
@@ -182,11 +194,13 @@ Edit `policy.yaml` (or point `POLICY_PATH` at a `.json` file) and restart. Examp
 - [x] Live run against the PayPal Sandbox: orders created, live status, capture-before-approval handled, cancel (`scripts/sandbox_smoke.py`)
 - [ ] Full buyer payment with a Sandbox personal account, recorded for the video
 - [x] AG Grid dashboard for orders, approvals and spend, approver token
+- [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
 - [ ] Demo video
 
 ## AI tools used
 
 - **Claude (Anthropic)** — `claude-sonnet-5-5` is the runtime purchasing agent (tool use via the Messages API).
+- The optional `AGENT_MODE=offline` parser is plain hand-written rules, not a model.
 - **Hark** (an AI agent, built on Claude) was used as a coding assistant to scaffold the backend, guardrail engine, tests and this README. All code was reviewed and tested by running the test suite and live agent calls.
 
 ## License

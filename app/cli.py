@@ -2,6 +2,8 @@
 
     python -m app.cli "Buy 2 USB-C cables and a mechanical keyboard"
 
+AGENT_MODE=offline uses the rule-based parser (no AI key needed).
+
 Uses a fresh in-memory ledger each run, so it does not share spend with a running
 server; set CLI_DB_PATH=guardrail.db to use the server's database instead.
 """
@@ -13,7 +15,7 @@ import sys
 
 os.environ.setdefault("GRB_NO_AUTOAPP", "1")
 
-from .agent import PurchasingAgent  # noqa: E402
+from .offline_agent import make_agent  # noqa: E402
 from .main import build_service  # noqa: E402
 
 
@@ -22,7 +24,7 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     svc = build_service(db_path=os.environ.get("CLI_DB_PATH", ":memory:"))
-    res = PurchasingAgent(svc).run(" ".join(argv))
+    res = make_agent(svc).run(" ".join(argv))
     for step in res.transcript:
         if step["role"] == "tool":
             out = step["output"]

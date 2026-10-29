@@ -1,0 +1,18 @@
+[user] 3 bags of coffee beans and 2 snack boxes
+
+  [tool] search_catalog({"query": "team coffee beans 1kg"}) -> 1 products
+  [tool] check_policy({"product_id": "P-3001", "quantity": 3}) -> NEEDS_APPROVAL
+  [tool] create_order({"product_id": "P-3001", "quantity": 3}) -> NEEDS_APPROVAL
+  [tool] request_approval({"product_id": "P-3001", "quantity": 3, "justification": "Requested by user: \"3 bags of coffee beans\" (Team Coffee Beans 1kg x3). Exceeds an automatic spend cap, so a human must approve."}) -> APPROVAL_REQUESTED
+  [tool] search_catalog({"query": "box of assorted snacks"}) -> 8 products
+  [tool] check_policy({"product_id": "P-3002", "quantity": 2}) -> NEEDS_APPROVAL
+  [tool] create_order({"product_id": "P-3002", "quantity": 2}) -> NEEDS_APPROVAL
+  [tool] request_approval({"product_id": "P-3002", "quantity": 2, "justification": "Requested by user: \"2 snack boxes\" (Box of Assorted Snacks x2). Exceeds an automatic spend cap, so a human must approve."}) -> APPROVAL_REQUESTED
+
+[agent]
+[offline rule-based mode, no AI]
+- 3 x P-3001: needs human approval (APR-DC041549): amount 84.00 exceeds per-order cap 50.00 USD
+- 2 x P-3002: needs human approval (APR-EA2834B6): amount 70.00 exceeds per-order cap 50.00 USD
+
+turns=1 usage={'input_tokens': 0, 'output_tokens': 0} stop=offline_rules
+spent_today=0.00 pending_approvals=2

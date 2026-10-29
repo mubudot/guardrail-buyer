@@ -152,7 +152,10 @@ $("ask").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKe
 
 (async () => {
   const h = await api("/health").catch(() => null);
-  if (h) $("mode").textContent = `PayPal: ${h.paypal} · ${h.model}${h.approver_auth ? " · approver token on" : ""}`;
+  if (h) {
+    $("mode").textContent = `PayPal: ${h.paypal} · ${h.agent_mode === "offline" ? "OFFLINE rule-based agent (no AI)" : h.model}${h.approver_auth ? " · approver token on" : ""}`;
+    if (h.agent_mode === "offline") $("mode").classList.add("offline");
+  }
   const q = new URLSearchParams(location.search);
   if (q.get("paid")) toast(q.get("status") === "PAYER_ACTION_REQUIRED"
     ? `${q.get("paid")}: PayPal says the buyer has not approved yet, nothing captured`

@@ -19,6 +19,7 @@ if os.environ.get("GRB_NO_DOTENV") != "1":
     load_dotenv(ROOT / ".env", override=False)
 
 from .agent import LLMError, PurchasingAgent  # noqa: E402
+from .offline_agent import OfflineAgent, make_agent  # noqa: E402
 from .guardrails import Policy  # noqa: E402
 from .paypal_client import MockPayPal, PayPalError, make_client  # noqa: E402
 from .service import BuyerService, Catalog  # noqa: E402
@@ -45,7 +46,7 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
                   description="AI purchasing agent with PayPal spend guardrails (Sandbox)")
     svc = service or build_service()
     app.state.service = svc
-    app.state.agent = agent or PurchasingAgent(svc)
+    app.state.agent = agent or make_agent(svc)
     token = approver_token if approver_token is not None else os.environ.get("APPROVER_TOKEN", "")
     if not token:
         log.warning("APPROVER_TOKEN not set: approve/reject endpoints are OPEN (dev mode)")
@@ -71,6 +72,7 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     @app.get("/health")
     def health():
         return {"ok": True, "paypal": svc.paypal.name, "model": app.state.agent.model,
+                "agent_mode": "offline" if isinstance(app.state.agent, OfflineAgent) else "claude",
                 "approver_auth": bool(token)}
 
     @app.get("/policy")
