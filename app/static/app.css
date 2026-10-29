@@ -1,0 +1,58 @@
+:root {
+  --bg: #f5f7fb; --card: #fff; --ink: #14213d; --muted: #5c6b84; --line: #e3e8f0;
+  --blue: #0070e0; --navy: #003087; --ok: #138a4c; --warn: #b26b00; --bad: #c0392b;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--ink); }
+header { display: flex; justify-content: space-between; align-items: center; padding: 14px 28px;
+  background: var(--navy); color: #fff; }
+header h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
+header .sub { color: #c7d6f5; font-size: 13px; }
+.title { display: flex; align-items: baseline; gap: 14px; }
+.status { display: flex; gap: 14px; align-items: center; }
+.pill { background: #ffffff22; border: 1px solid #ffffff44; padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+.token { font-size: 12px; color: #c7d6f5; display: flex; gap: 6px; align-items: center; }
+.token input { width: 140px; padding: 4px 8px; border-radius: 6px; border: 1px solid #ffffff55;
+  background: #ffffff18; color: #fff; }
+main { max-width: 1240px; margin: 0 auto; padding: 20px 28px 40px; display: grid; gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.card h2 { margin: 0 0 10px; font-size: 15px; }
+.row { display: flex; justify-content: space-between; align-items: baseline; }
+.hint { color: var(--muted); font-size: 12px; }
+#ask-form { display: flex; gap: 10px; }
+#ask { flex: 1; resize: vertical; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  font: inherit; }
+.btn { display: inline-block; border: 1px solid var(--line); background: #fff; color: var(--ink);
+  padding: 6px 14px; border-radius: 8px; cursor: pointer; text-decoration: none; font: inherit; }
+.btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
+.btn.bad { color: var(--bad); border-color: #e7b7b1; }
+.btn:disabled { opacity: .5; cursor: wait; }
+.grid-btn { padding: 3px 10px; font-size: 12px; line-height: 1.4; margin-right: 6px; vertical-align: middle; }
+.answer { margin-top: 12px; padding: 10px 12px; background: #f0f5ff; border-radius: 8px;
+  white-space: pre-wrap; border-left: 3px solid var(--blue); }
+.answer .steps { margin-top: 8px; color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.kpi { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; }
+.kpi .k { color: var(--muted); font-size: 12px; }
+.kpi .v { font-size: 22px; font-weight: 600; margin-top: 2px; }
+.bar { height: 6px; background: #e9eef6; border-radius: 3px; margin-top: 8px; overflow: hidden; display: flex; }
+.bar i { display: block; height: 100%; }
+.grid { height: 260px; }
+.grid.small, .grid.tiny { height: auto; }
+.ag-theme-quartz { --ag-font-size: 13px; --ag-header-height: 40px; }
+.st { font-weight: 600; font-size: 12px; }
+.st.COMPLETED, .st.ALLOW, .st.APPROVED { color: var(--ok); }
+.st.PAYER_ACTION_REQUIRED, .st.PENDING, .st.NEEDS_APPROVAL, .st.CREATING { color: var(--warn); }
+.st.FAILED, .st.CANCELLED, .st.EXPIRED, .st.CAPTURE_FAILED, .st.REJECTED, .st.DENY, .st.DENIED_BY_POLICY { color: var(--bad); }
+.toast { position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: #fff; padding: 10px 16px;
+  border-radius: 8px; box-shadow: 0 6px 20px #0003; max-width: 420px; }
+/* mock checkout page */
+body.checkout { display: grid; place-items: center; min-height: 100vh; }
+.checkout .card { width: 360px; text-align: center; padding: 28px; }
+.checkout .brand { font-size: 22px; font-weight: 700; color: var(--navy); margin-bottom: 10px; }
+.checkout .brand span { font-size: 12px; color: var(--muted); font-weight: 400; }
+.checkout .amount { font-size: 28px; font-weight: 700; }
+.checkout .btn { display: block; margin-top: 10px; }
+@media (max-width: 800px) { .kpis { grid-template-columns: repeat(2, 1fr); } }

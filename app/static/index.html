@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GuardRail Buyer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-grid.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-theme-quartz.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="title">
+    <h1>GuardRail Buyer</h1>
+    <span class="sub">AI purchasing agent · PayPal spend guardrails</span>
+  </div>
+  <div class="status">
+    <span id="mode" class="pill">…</span>
+    <label class="token">Approver token
+      <input id="token" type="password" placeholder="APPROVER_TOKEN" autocomplete="off">
+    </label>
+  </div>
+</header>
+
+<main>
+  <section class="ask card">
+    <h2>Ask the agent</h2>
+    <form id="ask-form">
+      <textarea id="ask" rows="2" maxlength="2000"
+        placeholder="e.g. Buy 2 USB-C cables and a mechanical keyboard for the new hire"></textarea>
+      <button id="ask-btn" class="btn primary" type="submit">Send</button>
+    </form>
+    <div id="answer" class="answer" hidden></div>
+  </section>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="card">
+    <div class="row"><h2>Pending approvals</h2><span class="hint">Over a cap → a human decides</span></div>
+    <div id="approvals" class="ag-theme-quartz grid small"></div>
+  </section>
+
+  <section class="card">
+    <div class="row"><h2>Orders</h2><span class="hint">PayPal Orders v2 status</span></div>
+    <div id="orders" class="ag-theme-quartz grid"></div>
+  </section>
+
+  <section class="card">
+    <div class="row"><h2>Spend vs caps</h2><span class="hint" id="spend-day"></span></div>
+    <div id="spend" class="ag-theme-quartz grid tiny"></div>
+  </section>
+</main>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

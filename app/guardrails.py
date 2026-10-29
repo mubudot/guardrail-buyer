@@ -177,6 +177,13 @@ class SpendLedger:
             )
             self._conn.commit()
 
+    def release(self, order_ref: str) -> int:
+        """Drop the spend reserved for an order (cancelled / expired / failed capture)."""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM spend WHERE order_ref=?", (order_ref,))
+            self._conn.commit()
+            return cur.rowcount
+
     def spent_on(self, day: str, currency: str) -> Decimal:
         with self._lock:
             row = self._conn.execute(

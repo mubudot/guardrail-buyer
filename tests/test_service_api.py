@@ -80,6 +80,7 @@ def test_mock_cannot_double_capture():
 def test_sandbox_requires_env(monkeypatch):
     monkeypatch.delenv("PAYPAL_CLIENT_ID", raising=False)
     monkeypatch.delenv("PAYPAL_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("PAYPAL_AUTH", raising=False)
     with pytest.raises(PayPalError):
         SandboxPayPal()
 
@@ -97,7 +98,7 @@ class FakeAgent:
 
 
 def test_rest_endpoints(service):
-    client = TestClient(create_app(service, FakeAgent(service)))
+    client = TestClient(create_app(service, FakeAgent(service), approver_token=""))
     assert client.get("/health").json()["paypal"] == "mock"
     pol = client.get("/policy").json()
     assert pol["per_order_cap"] == "50.00" and pol["spent_today"] == "0.00"

@@ -7,10 +7,11 @@ policy: it only ever calls these methods via tools.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -19,10 +20,6 @@ from zoneinfo import ZoneInfo
 from .guardrails import (Decision, OrderRequest, Policy, SpendLedger, Verdict,
                          evaluate, hard_rules_only, money)
 from .paypal_client import PayPalClient, PayPalError
-
-
-def _now() -> str:
-    return datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
 
 
 class Catalog:
@@ -65,7 +62,8 @@ class Store:
                 id TEXT PRIMARY KEY, product_id TEXT, product_name TEXT, merchant TEXT,
                 category TEXT, quantity INTEGER, amount TEXT, currency TEXT,
                 status TEXT, paypal_order_id TEXT, paypal_status TEXT, capture_id TEXT,
-                approval_id TEXT, decision TEXT, created_at TEXT);
+                approval_id TEXT, decision TEXT, created_at TEXT, approve_url TEXT,
+                updated_at TEXT);
             CREATE TABLE IF NOT EXISTS approvals (
                 id TEXT PRIMARY KEY, product_id TEXT, product_name TEXT, merchant TEXT,
                 category TEXT, quantity INTEGER, amount TEXT, currency TEXT,
@@ -73,7 +71,18 @@ class Store:
                 created_at TEXT, decided_at TEXT);
             """
         )
+        # migrate DBs created by v0.1 (no approve_url / updated_at columns)
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(orders)")}
+        for col in ("approve_url", "updated_at"):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE orders ADD COLUMN {col} TEXT")
         self.conn.commit()
+
+    def find(self, table: str, **where: Any) -> dict[str, Any] | None:
+        cond = " AND ".join(f"{k}=?" for k in where)
+        with self._lock:
+            r = self.conn.execute(f"SELECT * FROM {table} WHERE {cond}", list(where.values())).fetchone()
+        return self._decode(dict(r)) if r else None
 
     def insert(self, table: str, row: dict[str, Any]) -> None:
         cols = ",".join(row)
@@ -109,13 +118,33 @@ class Store:
         return [self._decode(dict(r)) for r in rows]
 
 
+# Order lifecycle (orders.status):
+#   CREATING -> COMPLETED                      (mock auto-approve: create + capture at once)
+#   CREATING -> PAYER_ACTION_REQUIRED -> COMPLETED   (buyer approved on PayPal, captured on return)
+#                                     -> CANCELLED   (buyer hit cancel on PayPal)
+#                                     -> EXPIRED     (not approved within approval_ttl)
+#                                     -> CAPTURE_FAILED
+#   CREATING -> FAILED                          (PayPal create call failed)
+# Spend accounting: the amount is RESERVED in the daily ledger as soon as the
+# PayPal order exists (so an agent cannot open many unpaid orders to dodge the
+# daily cap) and RELEASED on CANCELLED / EXPIRED / CAPTURE_FAILED. FAILED orders
+# never reserve. A reservation stays on the day it was made.
+OPEN_STATUSES = ("CREATING", "PAYER_ACTION_REQUIRED")
+RELEASED_STATUSES = ("CANCELLED", "EXPIRED", "CAPTURE_FAILED", "FAILED")
+
+
 class BuyerService:
     def __init__(self, policy: Policy, catalog: Catalog, paypal: PayPalClient,
-                 db_path: str = ":memory:", clock=None):
+                 db_path: str = ":memory:", clock=None, approval_ttl: timedelta | None = None):
         self.policy, self.catalog, self.paypal = policy, catalog, paypal
         self.store = Store(db_path)
         self.ledger = SpendLedger(db_path)
         self._clock = clock or (lambda: datetime.now(ZoneInfo("UTC")))
+        self.approval_ttl = approval_ttl or timedelta(
+            minutes=int(os.environ.get("PAYPAL_APPROVAL_TTL_MIN", "180")))
+
+    def _ts(self) -> str:
+        return self._clock().astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds")
 
     # ---- helpers -------------------------------------------------------
     def _today(self) -> str:
@@ -147,31 +176,115 @@ class BuyerService:
     def _execute(self, p: dict[str, Any], req: OrderRequest, quantity: int,
                  decision: Decision, approval_id: str | None = None) -> dict[str, Any]:
         oid = "ORD-" + uuid.uuid4().hex[:10].upper()
+        now = self._ts()
         row = {"id": oid, "product_id": p["id"], "product_name": p["name"], "merchant": p["merchant"],
                "category": p["category"], "quantity": quantity, "amount": str(req.amount),
                "currency": req.currency, "status": "CREATING", "paypal_order_id": None,
                "paypal_status": None, "capture_id": None, "approval_id": approval_id,
-               "decision": json.dumps(decision.to_dict()), "created_at": _now()}
+               "decision": json.dumps(decision.to_dict()), "created_at": now,
+               "approve_url": None, "updated_at": now}
         self.store.insert("orders", row)
         try:
             created = self.paypal.create_order(req.amount, req.currency, req.description, oid,
                                                items=[{"sku": p["id"], "quantity": quantity}])
-            self.store.update("orders", oid, paypal_order_id=created["id"], paypal_status=created["status"])
-            if created["status"] == "APPROVED":
-                cap = self.paypal.capture_order(created["id"])
-                self.store.update("orders", oid, status="COMPLETED", paypal_status=cap["status"],
-                                  capture_id=cap.get("capture_id"))
-            else:
-                # Real Sandbox: buyer must approve via approve_url before capture (step 1c).
-                self.store.update("orders", oid, status="PAYER_ACTION_REQUIRED")
         except PayPalError as e:
-            self.store.update("orders", oid, status="FAILED", paypal_status=str(e)[:200])
+            self.store.update("orders", oid, status="FAILED", paypal_status=str(e)[:200], updated_at=self._ts())
             out = self.store.get("orders", oid)
             out["error"] = str(e)
             return out
-        # Count spend once the PayPal order exists (reserve budget even before capture).
+        # Reserve budget as soon as the PayPal order exists.
         self.ledger.record(self._today(), req.amount, req.currency, oid)
+        self.store.update("orders", oid, paypal_order_id=created["id"], paypal_status=created["status"],
+                          approve_url=created.get("approve_url"), updated_at=self._ts())
+        if created["status"] == "APPROVED":
+            return self._capture(oid)
+        self.store.update("orders", oid, status="PAYER_ACTION_REQUIRED")
         return self.store.get("orders", oid)
+
+    def _capture(self, oid: str) -> dict[str, Any]:
+        o = self.store.get("orders", oid)
+        try:
+            cap = self.paypal.capture_order(o["paypal_order_id"])
+        except PayPalError as e:
+            # Not approved yet is not fatal: the buyer may still approve.
+            if "ORDER_NOT_APPROVED" in str(e) or "PAYER_ACTION_REQUIRED" in str(e):
+                out = self.store.get("orders", oid)
+                out["error"] = str(e)
+                return out
+            self.store.update("orders", oid, status="CAPTURE_FAILED", paypal_status=str(e)[:200],
+                              updated_at=self._ts())
+            self.ledger.release(oid)
+            out = self.store.get("orders", oid)
+            out["error"] = str(e)
+            return out
+        status = "COMPLETED" if cap["status"] == "COMPLETED" else cap["status"]
+        self.store.update("orders", oid, status=status, paypal_status=cap["status"],
+                          capture_id=cap.get("capture_id"), updated_at=self._ts())
+        return self.store.get("orders", oid)
+
+    # ---- PayPal buyer-approval round trip --------------------------------
+    def _by_paypal_id(self, paypal_order_id: str) -> dict[str, Any]:
+        o = self.store.find("orders", paypal_order_id=paypal_order_id)
+        if o is None:
+            raise KeyError(paypal_order_id)
+        return o
+
+    def complete_payment(self, paypal_order_id: str) -> dict[str, Any]:
+        """Buyer returned from PayPal after approving: capture (idempotent)."""
+        self.expire_stale()
+        o = self._by_paypal_id(paypal_order_id)
+        if o["status"] == "COMPLETED":
+            return o
+        if o["status"] != "PAYER_ACTION_REQUIRED":
+            raise ValueError(f"order {o['id']} is {o['status']}, cannot capture")
+        return self._capture(o["id"])
+
+    def cancel_payment(self, paypal_order_id: str) -> dict[str, Any]:
+        """Buyer cancelled on PayPal: release the reserved spend."""
+        o = self._by_paypal_id(paypal_order_id)
+        if o["status"] in OPEN_STATUSES:
+            self.store.update("orders", o["id"], status="CANCELLED", updated_at=self._ts())
+            self.ledger.release(o["id"])
+        return self.store.get("orders", o["id"])
+
+    def expire_stale(self) -> list[str]:
+        """Expire orders the buyer never approved within approval_ttl."""
+        cutoff = (self._clock() - self.approval_ttl).astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds")
+        expired = []
+        for o in self.store.list("orders", "PAYER_ACTION_REQUIRED"):
+            if o["created_at"] < cutoff:
+                self.store.update("orders", o["id"], status="EXPIRED", updated_at=self._ts())
+                self.ledger.release(o["id"])
+                expired.append(o["id"])
+        return expired
+
+    def spend_summary(self) -> dict[str, Any]:
+        """Today's spend split into captured vs reserved, against the caps."""
+        self.expire_stale()
+        day, cur = self._today(), self.policy.currency
+        captured = reserved = Decimal("0")
+        for d, cents, c, ref in self.ledger.entries():
+            if d != day or c != cur:
+                continue
+            amt = Decimal(cents) / 100
+            o = self.store.get("orders", ref) if ref else None
+            if o and o["status"] in OPEN_STATUSES:
+                reserved += amt
+            else:
+                captured += amt
+        total = captured + reserved
+        cap = self.policy.daily_cap
+        return {"day": day, "currency": cur, "captured": str(money(captured)),
+                "reserved": str(money(reserved)), "total": str(money(total)),
+                "daily_cap": str(cap), "remaining": str(money(max(cap - total, Decimal("0")))),
+                "per_order_cap": str(self.policy.per_order_cap),
+                "hard_max_per_order": str(self.policy.hard_max_per_order)}
+
+    @staticmethod
+    def _result(order: dict[str, Any]) -> str:
+        if order["status"] == "PAYER_ACTION_REQUIRED":
+            return "AWAITING_PAYER_APPROVAL"
+        return "ORDER_PLACED" if order["status"] == "COMPLETED" else "FAILED"
 
     def place_order(self, product_id: str, quantity: int = 1) -> dict[str, Any]:
         p, req = self._line(product_id, quantity)
@@ -182,7 +295,7 @@ class BuyerService:
             return {"result": "NEEDS_APPROVAL", **d.to_dict(),
                     "next_step": "call request_approval with a justification; a human must approve"}
         order = self._execute(p, req, quantity, d)
-        return {"result": "ORDER_PLACED" if order["status"] != "FAILED" else "FAILED", "order": order, **d.to_dict()}
+        return {"result": self._result(order), "order": order, **d.to_dict()}
 
     def request_approval(self, product_id: str, quantity: int, justification: str) -> dict[str, Any]:
         p, req = self._line(product_id, quantity)
@@ -197,7 +310,7 @@ class BuyerService:
             "category": p["category"], "quantity": quantity, "amount": str(req.amount),
             "currency": req.currency, "justification": justification[:500],
             "reasons": json.dumps(list(d.reasons)), "status": "PENDING", "order_id": None,
-            "created_at": _now(), "decided_at": None})
+            "created_at": self._ts(), "decided_at": None})
         return {"result": "APPROVAL_REQUESTED", "approval_id": aid, **d.to_dict()}
 
     def approve(self, approval_id: str) -> dict[str, Any]:
@@ -209,12 +322,12 @@ class BuyerService:
         p, req = self._line(a["product_id"], a["quantity"])
         d = hard_rules_only(self.policy, req)  # policy may have changed since the request
         if d.verdict == Verdict.DENY:
-            self.store.update("approvals", approval_id, status="DENIED_BY_POLICY", decided_at=_now())
+            self.store.update("approvals", approval_id, status="DENIED_BY_POLICY", decided_at=self._ts())
             return {"result": "DENIED", **d.to_dict()}
-        self.store.update("approvals", approval_id, status="APPROVED", decided_at=_now())
+        self.store.update("approvals", approval_id, status="APPROVED", decided_at=self._ts())
         order = self._execute(p, req, a["quantity"], d, approval_id)
         self.store.update("approvals", approval_id, order_id=order["id"])
-        return {"result": "ORDER_PLACED" if order["status"] != "FAILED" else "FAILED", "order": order}
+        return {"result": self._result(order), "order": order}
 
     def reject(self, approval_id: str) -> dict[str, Any]:
         a = self.store.get("approvals", approval_id)
@@ -222,5 +335,5 @@ class BuyerService:
             raise KeyError(approval_id)
         if a["status"] != "PENDING":
             raise ValueError(f"approval is already {a['status']}")
-        self.store.update("approvals", approval_id, status="REJECTED", decided_at=_now())
+        self.store.update("approvals", approval_id, status="REJECTED", decided_at=self._ts())
         return {"result": "REJECTED", "approval_id": approval_id}

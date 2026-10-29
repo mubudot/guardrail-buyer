@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 os.environ["GRB_NO_AUTOAPP"] = "1"
+os.environ["GRB_NO_DOTENV"] = "1"
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 

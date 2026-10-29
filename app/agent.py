@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -15,20 +16,25 @@ import httpx
 from .service import BuyerService
 
 DEFAULT_BASE_URL = "https://api.anthropic.com"
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL = "claude-sonnet-5-5"
 MAX_TURNS = 8
 
-SYSTEM_PROMPT = """You are GuardRail Buyer, a purchasing agent for a small team.
-You buy items from the sandbox catalog and pay through PayPal, strictly under the spend policy.
+SYSTEM_PROMPT = """You buy items for a small team from the sandbox catalog and pay through PayPal,
+strictly under the spend policy enforced by your tools.
 Rules:
-- Do not introduce yourself; get straight to work.
+- Never say who or what you are, never greet, never restate the task. Your first words are
+  either a tool call or a concrete result.
 - Always search_catalog first to find real product_ids; never invent ids or prices.
 - Call check_policy before buying. Then call create_order.
 - If the result is NEEDS_APPROVAL, call request_approval with a short business justification and
   tell the user a human must approve it. Never split an order into smaller orders to dodge a cap.
 - If the result is DENIED, do not try to work around it; explain why.
 - If the request is ambiguous, pick the cheapest product that clearly matches.
-- Finish with a short summary: what was bought (order id, amount), what awaits approval (approval id), what was refused.
+- If create_order returns AWAITING_PAYER_APPROVAL, the order exists and budget is reserved;
+  tell the user the payer must approve it at the order's approve_url before it is captured.
+- Do not narrate your reasoning or plans. When done, reply ONLY with the user-facing summary wrapped in
+  <summary></summary>: what was bought (order id, amount), what awaits payer or human approval
+  (order / approval id), what was refused and why. Plain short bullet lines.
 """
 
 TOOLS: list[dict[str, Any]] = [
@@ -54,6 +60,26 @@ TOOLS: list[dict[str, Any]] = [
          "product_id": {"type": "string"}, "quantity": {"type": "integer", "minimum": 1},
          "justification": {"type": "string"}}, "required": ["product_id", "quantity", "justification"]}},
 ]
+
+
+_INTRO_RE = re.compile(
+    r"^\s*(hi|hello|hey)?[,!.\s]*(i['’]?m|i am|this is)\s+(guardrail buyer|an? (ai )?(purchasing|procurement|buying) (agent|assistant))[^.!\n]*[.!]\s*",
+    re.IGNORECASE)
+
+
+_SUMMARY_RE = re.compile(r"<summary>(.*?)(?:</summary>|$)", re.DOTALL | re.IGNORECASE)
+
+
+def extract_summary(text: str) -> str:
+    """Return the <summary> block if the model produced one, else the text without intro."""
+    m = _SUMMARY_RE.search(text)
+    return m.group(1).strip() if m else strip_intro(text).strip()
+
+
+def strip_intro(text: str) -> str:
+    """Remove a leading self-introduction sentence the model sometimes adds anyway."""
+    out = _INTRO_RE.sub("", text, count=1)
+    return out if out.strip() else text
 
 
 class LLMError(RuntimeError):
@@ -125,12 +151,13 @@ class PurchasingAgent:
             res.usage["output_tokens"] += int(u.get("output_tokens", 0))
             content = resp.get("content", [])
             messages.append({"role": "assistant", "content": content})
-            texts = [b["text"] for b in content if b.get("type") == "text" and b.get("text")]
+            texts = [strip_intro(b["text"]) for b in content if b.get("type") == "text" and b.get("text")]
+            texts = [t for t in texts if t.strip()]
             if texts:
                 res.transcript.append({"role": "assistant", "text": "\n".join(texts)})
             tool_uses = [b for b in content if b.get("type") == "tool_use"]
             if resp.get("stop_reason") != "tool_use" or not tool_uses:
-                res.final_text = "\n".join(texts)
+                res.final_text = extract_summary("\n".join(texts))
                 res.stopped_reason = resp.get("stop_reason", "")
                 return res
             results = []

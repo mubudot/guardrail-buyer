@@ -1,10 +1,16 @@
 """PayPal client interface + Mock and Sandbox implementations.
 
 The Sandbox client targets the PayPal Orders v2 REST API:
-  POST /v1/oauth2/token               (client_credentials)
-  POST /v2/checkout/orders            (intent CAPTURE)
-  POST /v2/checkout/orders/{id}/capture
-Credentials come from PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET env vars only.
+  POST /v1/oauth2/token               (client_credentials -> Bearer token)
+  POST /v2/checkout/orders            (intent CAPTURE, returns payer-action URL)
+  GET  /v2/checkout/orders/{id}
+  POST /v2/checkout/orders/{id}/capture  (after the buyer approved)
+
+Auth modes (PAYPAL_AUTH):
+  oauth  (default) PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET from env -> OAuth2 token -> Bearer.
+  proxy  no credentials in-process: an egress proxy injects
+         `Authorization: Basic base64(client_id:secret)` for api-m.sandbox.paypal.com
+         and PayPal REST accepts client credentials directly. Nothing secret lives in the app.
 """
 from __future__ import annotations
 
@@ -36,25 +42,50 @@ class PayPalClient(ABC):
     def capture_order(self, order_id: str) -> dict[str, Any]:
         """Capture an approved order. Returns {'id', 'status', 'capture_id'?, 'raw'}."""
 
+    def get_order(self, order_id: str) -> dict[str, Any]:  # pragma: no cover - optional
+        raise NotImplementedError
+
 
 class MockPayPal(PayPalClient):
     """In-memory stand-in that mimics the Orders v2 status machine.
 
-    Mock orders are treated as already payer-approved so they can be captured
-    immediately (real Sandbox orders need the buyer to approve first).
+    By default mock orders are treated as already payer-approved so they are
+    captured immediately. With `require_payer_approval=True` (env
+    PAYPAL_MOCK_APPROVAL=1) they start as PAYER_ACTION_REQUIRED with an
+    approve_url pointing at the app's local mock checkout page, exactly like
+    the real Sandbox flow.
     """
     name = "mock"
 
-    def __init__(self) -> None:
+    def __init__(self, require_payer_approval: bool = False,
+                 checkout_base: str = "http://localhost:8000") -> None:
         self.orders: dict[str, dict[str, Any]] = {}
+        self.require_payer_approval = require_payer_approval
+        self.checkout_base = checkout_base.rstrip("/")
 
     def create_order(self, amount, currency, description, reference_id, items=None):
         oid = "MOCK-" + uuid.uuid4().hex[:12].upper()
+        status = "PAYER_ACTION_REQUIRED" if self.require_payer_approval else "APPROVED"
         self.orders[oid] = {
-            "id": oid, "status": "APPROVED", "amount": str(amount), "currency": currency,
+            "id": oid, "status": status, "amount": str(amount), "currency": currency,
             "description": description, "reference_id": reference_id, "items": items or [],
         }
-        return {"id": oid, "status": "APPROVED", "approve_url": None, "raw": dict(self.orders[oid])}
+        approve = f"{self.checkout_base}/paypal/mock-checkout?token={oid}" if self.require_payer_approval else None
+        return {"id": oid, "status": status, "approve_url": approve, "raw": dict(self.orders[oid])}
+
+    def approve(self, order_id: str) -> None:
+        """Simulate the buyer clicking 'Pay' on the PayPal checkout page."""
+        order = self.orders.get(order_id)
+        if order is None:
+            raise PayPalError(f"order {order_id} not found")
+        if order["status"] == "PAYER_ACTION_REQUIRED":
+            order["status"] = "APPROVED"
+
+    def get_order(self, order_id):
+        order = self.orders.get(order_id)
+        if order is None:
+            raise PayPalError(f"order {order_id} not found")
+        return {"id": order_id, "status": order["status"], "raw": dict(order)}
 
     def capture_order(self, order_id):
         order = self.orders.get(order_id)
@@ -62,6 +93,8 @@ class MockPayPal(PayPalClient):
             raise PayPalError(f"order {order_id} not found")
         if order["status"] == "COMPLETED":
             raise PayPalError(f"order {order_id} already captured")
+        if order["status"] != "APPROVED":
+            raise PayPalError(f"UNPROCESSABLE_ENTITY ORDER_NOT_APPROVED: order {order_id} is {order['status']}")
         order["status"] = "COMPLETED"
         cap = "MOCKCAP-" + uuid.uuid4().hex[:10].upper()
         order["capture_id"] = cap
@@ -69,20 +102,25 @@ class MockPayPal(PayPalClient):
 
 
 class SandboxPayPal(PayPalClient):
-    """Stub for the real PayPal Sandbox. Untested until step 1c (needs creds)."""
+    """Real PayPal Sandbox (Orders v2). See module docstring for auth modes."""
     name = "sandbox"
 
     def __init__(self, client_id: str | None = None, client_secret: str | None = None,
-                 base_url: str = SANDBOX_BASE, timeout: float = 30.0,
-                 return_url: str = "http://localhost:8000/paypal/return",
-                 cancel_url: str = "http://localhost:8000/paypal/cancel") -> None:
+                 base_url: str | None = None, timeout: float = 30.0,
+                 return_url: str | None = None, cancel_url: str | None = None,
+                 auth: str | None = None, transport: httpx.BaseTransport | None = None) -> None:
+        self.auth = (auth or os.environ.get("PAYPAL_AUTH", "oauth")).lower()
         self.client_id = client_id or os.environ.get("PAYPAL_CLIENT_ID")
         self.client_secret = client_secret or os.environ.get("PAYPAL_CLIENT_SECRET")
-        if not self.client_id or not self.client_secret:
-            raise PayPalError("PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET not set")
-        self.base_url = base_url.rstrip("/")
-        self.return_url, self.cancel_url = return_url, cancel_url
-        self._http = httpx.Client(timeout=timeout)
+        if self.auth == "oauth" and (not self.client_id or not self.client_secret):
+            raise PayPalError("PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET not set (or use PAYPAL_AUTH=proxy)")
+        if self.auth not in ("oauth", "proxy"):
+            raise PayPalError(f"unknown PAYPAL_AUTH {self.auth!r}")
+        self.base_url = (base_url or os.environ.get("PAYPAL_BASE_URL") or SANDBOX_BASE).rstrip("/")
+        public = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+        self.return_url = return_url or f"{public}/paypal/return"
+        self.cancel_url = cancel_url or f"{public}/paypal/cancel"
+        self._http = httpx.Client(timeout=timeout, transport=transport)
         self._token: str | None = None
         self._token_exp = 0.0
 
@@ -101,7 +139,10 @@ class SandboxPayPal(PayPalClient):
         return self._token
 
     def _headers(self, idempotency_key: str | None = None) -> dict[str, str]:
-        h = {"Authorization": f"Bearer {self._access_token()}", "Content-Type": "application/json"}
+        h = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self.auth == "oauth":
+            h["Authorization"] = f"Bearer {self._access_token()}"
+        # proxy mode: Authorization is injected on the wire, never held here.
         if idempotency_key:
             h["PayPal-Request-Id"] = idempotency_key
         return h
@@ -126,6 +167,13 @@ class SandboxPayPal(PayPalClient):
         approve = next((l["href"] for l in body.get("links", []) if l.get("rel") in ("payer-action", "approve")), None)
         return {"id": body["id"], "status": body["status"], "approve_url": approve, "raw": body}
 
+    def get_order(self, order_id):
+        r = self._http.get(f"{self.base_url}/v2/checkout/orders/{order_id}", headers=self._headers())
+        if r.status_code != 200:
+            raise PayPalError(f"get_order failed: HTTP {r.status_code}: {r.text[:300]}")
+        body = r.json()
+        return {"id": body["id"], "status": body["status"], "raw": body}
+
     def capture_order(self, order_id):
         r = self._http.post(f"{self.base_url}/v2/checkout/orders/{order_id}/capture",
                             headers=self._headers(idempotency_key=f"cap-{order_id}"))
@@ -144,4 +192,5 @@ def make_client(kind: str | None = None) -> PayPalClient:
     kind = (kind or os.environ.get("PAYPAL_MODE", "mock")).lower()
     if kind == "sandbox":
         return SandboxPayPal()
-    return MockPayPal()
+    return MockPayPal(require_payer_approval=os.environ.get("PAYPAL_MOCK_APPROVAL") == "1",
+                      checkout_base=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"))
