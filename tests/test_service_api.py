@@ -72,9 +72,9 @@ def test_paypal_failure_marks_order_failed_and_not_counted(service):
 def test_mock_cannot_double_capture():
     m = MockPayPal()
     o = m.create_order(1, "USD", "x", "ref")
-    m.capture_order(o["id"])
-    with pytest.raises(PayPalError):
-        m.capture_order(o["id"])
+    first = m.capture_order(o["id"])
+    # like the Sandbox (ORDER_ALREADY_CAPTURED): a repeat returns the same capture, no second one
+    assert m.capture_order(o["id"])["capture_id"] == first["capture_id"]
 
 
 def test_sandbox_requires_env(monkeypatch):

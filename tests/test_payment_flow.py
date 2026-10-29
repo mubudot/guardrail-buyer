@@ -163,3 +163,111 @@ def test_sandbox_proxy_mode_sends_no_credentials(monkeypatch):
     pp.create_order(1, "USD", "x", "ORD-2")
     assert [r.url.path for r in seen] == ["/v2/checkout/orders"]
     assert "authorization" not in seen[0].headers
+
+
+# ---- iteration 2: real Sandbox error shapes (recorded from api-m.sandbox.paypal.com) ----
+NOT_APPROVED_422 = {
+    "name": "UNPROCESSABLE_ENTITY",
+    "details": [{"issue": "ORDER_NOT_APPROVED",
+                 "description": "Payer has not yet approved the Order for payment."}],
+    "message": "The requested action could not be performed, semantically incorrect, or failed business validation.",
+    "debug_id": "f132290fbbab9"}
+
+
+def _sandbox_states(state):
+    """Fake Sandbox whose order is approved only once state['approved'] is True."""
+    seen = []
+
+    def handler(req: httpx.Request):
+        seen.append(req)
+        p = req.url.path
+        if p == "/v2/checkout/orders":
+            return httpx.Response(200, json={"id": "8AB", "status": "PAYER_ACTION_REQUIRED", "links": [
+                {"rel": "payer-action", "href": "https://www.sandbox.paypal.com/checkoutnow?token=8AB"}]})
+        if p == "/v2/checkout/orders/8AB/capture":
+            if state.get("captured"):
+                return httpx.Response(422, json={"name": "UNPROCESSABLE_ENTITY",
+                                                 "details": [{"issue": "ORDER_ALREADY_CAPTURED"}]})
+            if not state.get("approved"):
+                return httpx.Response(422, json=NOT_APPROVED_422)
+            state["captured"] = True
+            return httpx.Response(201, json={"id": "8AB", "status": "COMPLETED", "purchase_units": [
+                {"payments": {"captures": [{"id": "CAP9", "status": "COMPLETED"}]}}]})
+        if p == "/v2/checkout/orders/8AB":
+            st = "COMPLETED" if state.get("captured") else ("APPROVED" if state.get("approved") else "PAYER_ACTION_REQUIRED")
+            body = {"id": "8AB", "status": st}
+            if state.get("captured"):
+                body["purchase_units"] = [{"payments": {"captures": [{"id": "CAP9", "status": "COMPLETED"}]}}]
+            return httpx.Response(200, json=body)
+        return httpx.Response(404, json={"name": "RESOURCE_NOT_FOUND"})
+    return httpx.MockTransport(handler), seen
+
+
+def test_sandbox_error_is_parsed():
+    transport, _ = _sandbox_states({})
+    pp = SandboxPayPal(auth="proxy", transport=transport)
+    pp.create_order(1, "USD", "x", "ORD-9")
+    with pytest.raises(PayPalError) as ei:
+        pp.capture_order("8AB")
+    e = ei.value
+    assert (e.status_code, e.issue, e.debug_id) == (422, "ORDER_NOT_APPROVED", "f132290fbbab9")
+    assert "Payer has not" not in str(e)  # no raw body echoed into stored status
+
+
+def test_sandbox_capture_uses_fresh_request_id_and_handles_already_captured():
+    state = {}
+    transport, seen = _sandbox_states(state)
+    pp = SandboxPayPal(auth="proxy", transport=transport)
+    with pytest.raises(PayPalError):
+        pp.capture_order("8AB")
+    state["approved"] = True
+    assert pp.capture_order("8AB")["capture_id"] == "CAP9"
+    ids = [r.headers["paypal-request-id"] for r in seen if r.url.path.endswith("/capture")]
+    assert len(set(ids)) == 2  # a retried capture must not replay the earlier 422
+    again = pp.capture_order("8AB")  # ORDER_ALREADY_CAPTURED -> current order, no error
+    assert again["status"] == "COMPLETED" and again["capture_id"] == "CAP9"
+
+
+def test_service_with_sandbox_not_approved_then_approved(policy, catalog, clock):
+    state = {}
+    transport, _ = _sandbox_states(state)
+    svc = BuyerService(policy, catalog, SandboxPayPal(auth="proxy", transport=transport), ":memory:", clock=clock)
+    c = TestClient(create_app(svc, approver_token="t"))
+    o = svc.place_order("P-1001", 1)["order"]
+    assert o["paypal_order_id"] == "8AB"
+    r = c.post(f"/orders/{o['id']}/capture")
+    assert r.status_code == 409 and r.json()["detail"]["paypal_issue"] == "ORDER_NOT_APPROVED"
+    assert c.get(f"/orders/{o['id']}").json()["status"] == "PAYER_ACTION_REQUIRED"
+    assert svc.spend_summary()["reserved"] == "12.99"
+    # return redirect before approval: no capture, back to dashboard
+    r = c.get("/paypal/return", params={"token": "8AB", "format": "json"})
+    assert r.json()["result"] == "NOT_APPROVED_YET"
+    state["approved"] = True
+    live = c.get(f"/orders/{o['id']}").json()
+    assert live["paypal_live_status"] == "APPROVED"
+    done = c.post(f"/orders/{o['id']}/capture").json()
+    assert done["status"] == "COMPLETED" and done["capture_id"] == "CAP9"
+    assert c.post(f"/orders/{o['id']}/capture").json()["result"] == "ALREADY_CAPTURED"
+    assert svc.spend_summary()["captured"] == "12.99"
+
+
+def test_cancel_endpoint_releases_and_blocks_capture(policy, catalog, clock):
+    transport, _ = _sandbox_states({})
+    svc = BuyerService(policy, catalog, SandboxPayPal(auth="proxy", transport=transport), ":memory:", clock=clock)
+    c = TestClient(create_app(svc, approver_token="t"))
+    o = svc.place_order("P-1001", 1)["order"]
+    assert c.post(f"/orders/{o['id']}/cancel").status_code == 401
+    assert c.post(f"/orders/{o['id']}/cancel", headers={"X-Approver-Token": "t"}).json()["status"] == "CANCELLED"
+    assert svc.spend_summary()["total"] == "0.00"
+    assert c.post(f"/orders/{o['id']}/capture").status_code == 409
+    assert c.get("/orders/ORD-NOPE").status_code == 404
+
+
+def test_capture_declined_releases(policy, catalog, clock):
+    svc = BuyerService(policy, catalog, MockPayPal(require_payer_approval=True), ":memory:", clock=clock)
+    o = svc.place_order("P-1001", 1)["order"]
+    svc.paypal.approve(o["paypal_order_id"])
+    svc.paypal.capture_order = lambda oid: {"id": oid, "status": "COMPLETED", "capture_id": "C",
+                                            "capture_status": "DECLINED", "raw": {}}
+    out = svc.complete_payment(o["paypal_order_id"])
+    assert out["status"] == "CAPTURE_FAILED" and svc.spend_summary()["total"] == "0.00"

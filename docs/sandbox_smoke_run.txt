@@ -1,0 +1,24 @@
+PayPal base: https://api-m.sandbox.paypal.com  auth=proxy
+1. ALLOW -> real Sandbox order
+  ok   guardrails ALLOW, order awaiting buyer  [AWAITING_PAYER_APPROVAL]
+  ok   PayPal order id  [37C060119T8324000]
+  ok   approve URL  [https://www.sandbox.paypal.com/checkoutnow?token=37C060119T8324000]
+  ok   12.99 reserved against daily cap
+2. GET live status
+  ok   PayPal reports PAYER_ACTION_REQUIRED  [PAYER_ACTION_REQUIRED]
+3. capture before buyer approval
+  ok   capture -> NOT_APPROVED_YET  [capture_order failed: HTTP 422 ORDER_NOT_APPROVED (debug_id f606064c1be7f)]
+  ok   order stays open, reservation kept  [12.99]
+  ok   /paypal/return before approval does not capture
+4. cancel path
+  ok   cancel releases budget
+  ok   capture after cancel refused
+5. NEEDS_APPROVAL -> human approve -> real Sandbox order
+  ok   keyboard $89 needs approval  [APPROVAL_REQUESTED]
+  ok   approved -> Sandbox order  [61A80299XM894681H]
+6. DENY never reaches PayPal
+  ok   gift card denied  [merchant 'Shady Gifts Sandbox' is blocked; category 'gift-cards' is not on the allowlist]
+  ok   only 2 PayPal orders were created
+orders: [["ORD-E15EDC5F96", "61A80299XM894681H", "CANCELLED"], ["ORD-4AE44D82D2", "37C060119T8324000", "CANCELLED"]]
+
+RESULT: PASS

@@ -201,25 +201,80 @@ class BuyerService:
         self.store.update("orders", oid, status="PAYER_ACTION_REQUIRED")
         return self.store.get("orders", oid)
 
+    # PayPal issues that mean "the buyer has not approved yet": not fatal, keep the order open.
+    NOT_YET_APPROVED = ("ORDER_NOT_APPROVED", "PAYER_ACTION_REQUIRED")
+
     def _capture(self, oid: str) -> dict[str, Any]:
         o = self.store.get("orders", oid)
         try:
             cap = self.paypal.capture_order(o["paypal_order_id"])
         except PayPalError as e:
-            # Not approved yet is not fatal: the buyer may still approve.
-            if "ORDER_NOT_APPROVED" in str(e) or "PAYER_ACTION_REQUIRED" in str(e):
+            issue = getattr(e, "issue", None) or ""
+            if issue in self.NOT_YET_APPROVED or any(t in str(e) for t in self.NOT_YET_APPROVED):
                 out = self.store.get("orders", oid)
-                out["error"] = str(e)
+                out.update(result="NOT_APPROVED_YET", error=str(e), paypal_issue=issue or None)
                 return out
             self.store.update("orders", oid, status="CAPTURE_FAILED", paypal_status=str(e)[:200],
                               updated_at=self._ts())
             self.ledger.release(oid)
             out = self.store.get("orders", oid)
-            out["error"] = str(e)
+            out.update(error=str(e), paypal_issue=issue or None)
             return out
-        status = "COMPLETED" if cap["status"] == "COMPLETED" else cap["status"]
-        self.store.update("orders", oid, status=status, paypal_status=cap["status"],
+        cap_status = cap.get("capture_status")
+        if cap["status"] == "COMPLETED" and cap_status not in ("DECLINED", "FAILED"):
+            status = "COMPLETED"
+        else:
+            status = "CAPTURE_FAILED"
+            self.ledger.release(oid)
+        self.store.update("orders", oid, status=status,
+                          paypal_status=cap["status"] + (f"/{cap_status}" if cap_status and cap_status != cap["status"] else ""),
                           capture_id=cap.get("capture_id"), updated_at=self._ts())
+        return self.store.get("orders", oid)
+
+    # ---- order status / manual capture / cancel by our order id -------
+    def get_order(self, oid: str, refresh: bool = False) -> dict[str, Any]:
+        """Our order record; with refresh=True also fetch the live status from PayPal."""
+        self.expire_stale()
+        o = self.store.get("orders", oid)
+        if o is None:
+            raise KeyError(oid)
+        if refresh and o.get("paypal_order_id"):
+            try:
+                live = self.paypal.get_order(o["paypal_order_id"])
+            except (PayPalError, NotImplementedError) as e:
+                o["refresh_error"] = str(e)
+                return o
+            if live["status"] != o.get("paypal_status"):
+                self.store.update("orders", oid, paypal_status=live["status"], updated_at=self._ts())
+                o = self.store.get("orders", oid)
+            o["paypal_live_status"] = live["status"]
+        return o
+
+    def capture(self, oid: str) -> dict[str, Any]:
+        """Try to capture an open order (e.g. buyer approved but the redirect was lost).
+        Returns result=NOT_APPROVED_YET without changing anything if the buyer has not approved."""
+        self.expire_stale()
+        o = self.store.get("orders", oid)
+        if o is None:
+            raise KeyError(oid)
+        if o["status"] == "COMPLETED":
+            return {**o, "result": "ALREADY_CAPTURED"}
+        if o["status"] != "PAYER_ACTION_REQUIRED":
+            raise ValueError(f"order {oid} is {o['status']}, cannot capture")
+        out = self._capture(oid)
+        out.setdefault("result", "CAPTURED" if out["status"] == "COMPLETED" else out["status"])
+        return out
+
+    def cancel(self, oid: str) -> dict[str, Any]:
+        """Cancel an open order on our side and release its reservation. PayPal Orders v2
+        has no cancel call for uncaptured orders; an unapproved PayPal order simply
+        expires, and our status check refuses to capture a CANCELLED order."""
+        o = self.store.get("orders", oid)
+        if o is None:
+            raise KeyError(oid)
+        if o["status"] in OPEN_STATUSES:
+            self.store.update("orders", oid, status="CANCELLED", updated_at=self._ts())
+            self.ledger.release(oid)
         return self.store.get("orders", oid)
 
     # ---- PayPal buyer-approval round trip --------------------------------
@@ -241,11 +296,7 @@ class BuyerService:
 
     def cancel_payment(self, paypal_order_id: str) -> dict[str, Any]:
         """Buyer cancelled on PayPal: release the reserved spend."""
-        o = self._by_paypal_id(paypal_order_id)
-        if o["status"] in OPEN_STATUSES:
-            self.store.update("orders", o["id"], status="CANCELLED", updated_at=self._ts())
-            self.ledger.release(o["id"])
-        return self.store.get("orders", o["id"])
+        return self.cancel(self._by_paypal_id(paypal_order_id)["id"])
 
     def expire_stale(self) -> list[str]:
         """Expire orders the buyer never approved within approval_ttl."""

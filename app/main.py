@@ -117,6 +117,37 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     def reject(approval_id: str):
         return _decide(approval_id, svc.reject)
 
+    @app.get("/orders/{order_id}")
+    def get_order(order_id: str, refresh: bool = True):
+        """One order; refresh=true (default) also asks PayPal for the live status."""
+        try:
+            return svc.get_order(order_id, refresh=refresh)
+        except KeyError:
+            raise HTTPException(404, "unknown order")
+
+    @app.post("/orders/{order_id}/capture")
+    def capture_order(order_id: str):
+        """Capture an order the buyer approved on PayPal (fallback if the return redirect
+        was lost). Not approved yet -> 409 with PayPal's issue code; nothing changes."""
+        try:
+            out = svc.capture(order_id)
+        except KeyError:
+            raise HTTPException(404, "unknown order")
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        if out.get("result") == "NOT_APPROVED_YET":
+            raise HTTPException(409, {"result": "NOT_APPROVED_YET", "paypal_issue": out.get("paypal_issue"),
+                                      "message": "the buyer has not approved this order on PayPal yet",
+                                      "order": {k: v for k, v in out.items() if k not in ("error",)}})
+        return out
+
+    @app.post("/orders/{order_id}/cancel", dependencies=[Depends(require_approver)])
+    def cancel_order(order_id: str):
+        try:
+            return svc.cancel(order_id)
+        except KeyError:
+            raise HTTPException(404, "unknown order")
+
     # ---- PayPal buyer round trip ---------------------------------------
     # PayPal redirects the buyer to return_url?token=<paypal order id>&PayerID=...
     # after approval, or to cancel_url?token=<paypal order id> on cancel.

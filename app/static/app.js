@@ -154,7 +154,9 @@ $("ask").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKe
   const h = await api("/health").catch(() => null);
   if (h) $("mode").textContent = `PayPal: ${h.paypal} · ${h.model}${h.approver_auth ? " · approver token on" : ""}`;
   const q = new URLSearchParams(location.search);
-  if (q.get("paid")) toast(`Payment returned from PayPal: ${q.get("paid")} → ${q.get("status")}`);
+  if (q.get("paid")) toast(q.get("status") === "PAYER_ACTION_REQUIRED"
+    ? `${q.get("paid")}: PayPal says the buyer has not approved yet, nothing captured`
+    : `Payment returned from PayPal: ${q.get("paid")} → ${q.get("status")}`);
   if (q.get("cancelled")) toast(`Buyer cancelled ${q.get("cancelled")}: reserved budget released`);
   if (q.get("paid") || q.get("cancelled")) history.replaceState(null, "", "/");
   refresh();

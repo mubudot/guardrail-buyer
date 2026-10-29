@@ -27,7 +27,28 @@ SANDBOX_BASE = "https://api-m.sandbox.paypal.com"
 
 
 class PayPalError(RuntimeError):
-    pass
+    """A PayPal API error. `issue` is PayPal's machine-readable code when known
+    (e.g. ORDER_NOT_APPROVED, ORDER_ALREADY_CAPTURED), `status_code` the HTTP status."""
+
+    def __init__(self, message: str, *, status_code: int | None = None,
+                 issue: str | None = None, debug_id: str | None = None) -> None:
+        super().__init__(message)
+        self.status_code, self.issue, self.debug_id = status_code, issue, debug_id
+
+    @classmethod
+    def from_response(cls, what: str, r: "httpx.Response") -> "PayPalError":
+        issue = debug_id = None
+        try:
+            body = r.json()
+            debug_id = body.get("debug_id")
+            details = body.get("details") or []
+            issue = (details[0].get("issue") if details else None) or body.get("name") or body.get("error")
+        except Exception:  # non-JSON body
+            pass
+        msg = f"{what} failed: HTTP {r.status_code}" + (f" {issue}" if issue else "")
+        if debug_id:
+            msg += f" (debug_id {debug_id})"
+        return cls(msg, status_code=r.status_code, issue=issue, debug_id=debug_id)
 
 
 class PayPalClient(ABC):
@@ -91,14 +112,17 @@ class MockPayPal(PayPalClient):
         order = self.orders.get(order_id)
         if order is None:
             raise PayPalError(f"order {order_id} not found")
-        if order["status"] == "COMPLETED":
-            raise PayPalError(f"order {order_id} already captured")
+        if order["status"] == "COMPLETED":  # like Sandbox: ORDER_ALREADY_CAPTURED -> current order
+            return {"id": order_id, "status": "COMPLETED", "capture_id": order.get("capture_id"),
+                    "capture_status": "COMPLETED", "raw": dict(order)}
         if order["status"] != "APPROVED":
-            raise PayPalError(f"UNPROCESSABLE_ENTITY ORDER_NOT_APPROVED: order {order_id} is {order['status']}")
+            raise PayPalError(f"capture_order failed: HTTP 422 ORDER_NOT_APPROVED (order {order_id} is {order['status']})",
+                              status_code=422, issue="ORDER_NOT_APPROVED")
         order["status"] = "COMPLETED"
         cap = "MOCKCAP-" + uuid.uuid4().hex[:10].upper()
         order["capture_id"] = cap
-        return {"id": order_id, "status": "COMPLETED", "capture_id": cap, "raw": dict(order)}
+        return {"id": order_id, "status": "COMPLETED", "capture_id": cap, "capture_status": "COMPLETED",
+                "raw": dict(order)}
 
 
 class SandboxPayPal(PayPalClient):
@@ -132,7 +156,7 @@ class SandboxPayPal(PayPalClient):
                             auth=(self.client_id, self.client_secret),
                             headers={"Accept": "application/json"})
         if r.status_code != 200:
-            raise PayPalError(f"OAuth failed: HTTP {r.status_code}")
+            raise PayPalError.from_response("OAuth", r)
         body = r.json()
         self._token = body["access_token"]
         self._token_exp = time.time() + int(body.get("expires_in", 300))
@@ -162,7 +186,7 @@ class SandboxPayPal(PayPalClient):
         r = self._http.post(f"{self.base_url}/v2/checkout/orders", json=payload,
                             headers=self._headers(idempotency_key=reference_id))
         if r.status_code not in (200, 201):
-            raise PayPalError(f"create_order failed: HTTP {r.status_code}: {r.text[:300]}")
+            raise PayPalError.from_response("create_order", r)
         body = r.json()
         approve = next((l["href"] for l in body.get("links", []) if l.get("rel") in ("payer-action", "approve")), None)
         return {"id": body["id"], "status": body["status"], "approve_url": approve, "raw": body}
@@ -170,22 +194,33 @@ class SandboxPayPal(PayPalClient):
     def get_order(self, order_id):
         r = self._http.get(f"{self.base_url}/v2/checkout/orders/{order_id}", headers=self._headers())
         if r.status_code != 200:
-            raise PayPalError(f"get_order failed: HTTP {r.status_code}: {r.text[:300]}")
+            raise PayPalError.from_response("get_order", r)
         body = r.json()
         return {"id": body["id"], "status": body["status"], "raw": body}
 
     def capture_order(self, order_id):
+        # A fresh PayPal-Request-Id per attempt: PayPal replays the stored response
+        # for a repeated id, so reusing one after ORDER_NOT_APPROVED could replay that
+        # 422 even once the buyer has approved. Double capture is prevented by the
+        # app's own status check and by PayPal (ORDER_ALREADY_CAPTURED).
         r = self._http.post(f"{self.base_url}/v2/checkout/orders/{order_id}/capture",
-                            headers=self._headers(idempotency_key=f"cap-{order_id}"))
+                            headers=self._headers(idempotency_key=f"cap-{order_id}-{uuid.uuid4().hex[:8]}"))
         if r.status_code not in (200, 201):
-            raise PayPalError(f"capture_order failed: HTTP {r.status_code}: {r.text[:300]}")
-        body = r.json()
-        cap_id = None
+            err = PayPalError.from_response("capture_order", r)
+            if err.issue == "ORDER_ALREADY_CAPTURED":
+                body = self.get_order(order_id)["raw"]
+            else:
+                raise err
+        else:
+            body = r.json()
+        cap_id = cap_status = None
         try:
-            cap_id = body["purchase_units"][0]["payments"]["captures"][0]["id"]
-        except (KeyError, IndexError):
+            cap = body["purchase_units"][0]["payments"]["captures"][0]
+            cap_id, cap_status = cap.get("id"), cap.get("status")
+        except (KeyError, IndexError, TypeError):
             pass
-        return {"id": body["id"], "status": body["status"], "capture_id": cap_id, "raw": body}
+        return {"id": body["id"], "status": body["status"], "capture_id": cap_id,
+                "capture_status": cap_status, "raw": body}
 
 
 def make_client(kind: str | None = None) -> PayPalClient:

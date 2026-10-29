@@ -2,7 +2,7 @@
 
 > An AI purchasing agent that pays with PayPal — but only inside the spend guardrails you set.
 
-*Draft README — work in progress for the PayPal AI Hackathon.*
+*Built for the PayPal AI Hackathon (2026). Runs fully offline in mock mode, or against the real PayPal Sandbox.*
 
 ![dashboard](docs/dashboard.png)
 
@@ -65,18 +65,22 @@ lazily on reads and on return. A reservation stays on the day it was made (polic
 
 ## Quick start
 
-Requires Python 3.11+.
+Requires Python 3.11+ and git. From a fresh clone:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env          # add ANTHROPIC_API_KEY (or point ANTHROPIC_BASE_URL at a gateway)
+cp .env.example .env               # then put your Anthropic key in ANTHROPIC_API_KEY
 ```
 
 `.env` is loaded automatically (python-dotenv); real environment variables win.
+The defaults run with a **mock PayPal** (no PayPal account, no network). Only the agent
+steps (4 and 8 below) need an Anthropic API key; tests and every other step work without one.
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `50 passed` (no network, no API key needed).
+1. **Run the tests** — `python -m pytest -q` → see `55 passed` (no network, no API key needed).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -100,13 +104,30 @@ cp .env.example .env          # add ANTHROPIC_API_KEY (or point ANTHROPIC_BASE_U
 
 ### Against the real PayPal Sandbox
 
+Create a free REST app at <https://developer.paypal.com/> (Apps & Credentials → Sandbox), copy its
+client id and secret into `.env`, then:
+
 ```bash
-PAYPAL_MODE=sandbox PAYPAL_CLIENT_ID=… PAYPAL_CLIENT_SECRET=… uvicorn app.main:app --port 8000
+# in .env: PAYPAL_MODE=sandbox  PAYPAL_CLIENT_ID=…  PAYPAL_CLIENT_SECRET=…
+APPROVER_TOKEN=demo uvicorn app.main:app --port 8000
+python scripts/sandbox_smoke.py          # no LLM: guardrails -> real Sandbox orders -> status -> capture-before-approval -> cancel
+python scripts/sandbox_smoke.py --app http://localhost:8000 --agent --token demo   # same, through the running app + Claude agent
 ```
 
-Ask the agent for something small, click **Pay with PayPal** (opens `sandbox.paypal.com/checkoutnow`),
-log in with a Sandbox *personal* test account from the PayPal developer dashboard and pay → PayPal
-redirects to `/paypal/return`, the order is captured and shows `COMPLETED` with its capture id.
+The smoke test creates real Sandbox orders (status `PAYER_ACTION_REQUIRED`, approve link on
+`www.sandbox.paypal.com/checkoutnow`), reads their live status, shows that a capture before the buyer
+approved is refused by PayPal (`422 ORDER_NOT_APPROVED` → the app answers `409 NOT_APPROVED_YET`, order
+and budget reservation unchanged), and cancels them so the reservation is released. Sample output:
+`docs/sandbox_smoke_run.txt`.
+
+To finish a payment, click **Pay with PayPal**, log in with a Sandbox *personal* test account (Testing
+Tools → Sandbox Accounts in the developer dashboard) and pay → PayPal redirects to `/paypal/return`, the
+order is captured and shows `COMPLETED` with its capture id. If that redirect is lost (e.g. the app
+ran on another host), `POST /orders/{id}/capture` captures it afterwards.
+
+`PAYPAL_AUTH=proxy` is for deployments where an egress proxy injects `Authorization: Basic` for
+`api-m.sandbox.paypal.com`; the app then holds no PayPal credentials at all (PayPal REST accepts the
+client credentials as Basic auth directly on the Orders API).
 
 ### Changing the policy
 
@@ -119,6 +140,9 @@ Edit `policy.yaml` (or point `POLICY_PATH` at a `.json` file) and restart. Examp
 |---|---|---|
 | POST | `/agent/request` | `{"request": "..."}` — run the agent; returns final text, transcript, token usage |
 | GET | `/orders` | all orders (`?status=COMPLETED`) with the policy decision attached |
+| GET | `/orders/{id}` | one order; `?refresh=true` (default) adds `paypal_live_status` from PayPal |
+| POST | `/orders/{id}/capture` | capture after buyer approval (fallback for a lost redirect); not approved yet → `409 NOT_APPROVED_YET` |
+| POST | `/orders/{id}/cancel` | cancel an open order, release its reservation (approver token) |
 | GET | `/approvals` | approval requests (`?status=PENDING`) |
 | POST | `/approvals/{id}/approve` | approve → re-check deny rules → PayPal order (needs `X-Approver-Token` when `APPROVER_TOKEN` is set) |
 | POST | `/approvals/{id}/reject` | reject, nothing is paid (same token) |
@@ -152,7 +176,8 @@ Edit `policy.yaml` (or point `POLICY_PATH` at a `.json` file) and restart. Examp
 - [x] FastAPI backend with approvals workflow, MockPayPal
 - [x] Claude tool-use agent wired to the guardrails
 - [x] Buyer-approval round trip (create → approve → return → capture), reservations, cancel / expiry — tested with the mock and a wire-format test of the Sandbox client
-- [ ] Live run against the PayPal Sandbox (waiting on credentials binding)
+- [x] Live run against the PayPal Sandbox: orders created, live status, capture-before-approval handled, cancel (`scripts/sandbox_smoke.py`)
+- [ ] Full buyer payment with a Sandbox personal account, recorded for the video
 - [x] AG Grid dashboard for orders, approvals and spend, approver token
 - [ ] Demo video
 
