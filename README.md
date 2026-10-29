@@ -148,6 +148,14 @@ client credentials as Basic auth directly on the Orders API).
 Edit `policy.yaml` (or point `POLICY_PATH` at a `.json` file) and restart. Example: set
 `per_order_cap: 100` → the keyboard in step 4 is bought directly instead of needing approval.
 
+## Demo video pipeline
+
+`scripts/video/make_demo.sh` rebuilds the demo-video draft reproducibly: Piper TTS narration per scene
+(`scripts/video/scenes.json`, script in `docs/VIDEO_SCRIPT.md`) → app in Sandbox mode → headless
+Chromium (Playwright) drives the dashboard and records the screen → ffmpeg cuts the model's thinking
+time and lays the narration on top → `docs/demo_draft.mp4`. No music. The Sandbox buyer login is the
+one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
+
 ## REST API
 
 | Method | Path | Description |
@@ -195,7 +203,7 @@ Edit `policy.yaml` (or point `POLICY_PATH` at a `.json` file) and restart. Examp
 - [ ] Full buyer payment with a Sandbox personal account, recorded for the video
 - [x] AG Grid dashboard for orders, approvals and spend, approver token
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
-- [ ] Demo video
+- [~] Demo video: draft pipeline done; real Sandbox buyer-approval clip pending
 
 ## AI tools used
 

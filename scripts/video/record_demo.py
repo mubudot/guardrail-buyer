@@ -59,9 +59,9 @@ PayPal redirects to <code>/paypal/return</code> → the app captures → order <
 
 CAPTION_JS = """(t) => { let d = document.getElementById('__cap');
  if (!d) { d = document.createElement('div'); d.id='__cap';
-   d.style.cssText='position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:2147483647;'+
+   d.style.cssText='position:fixed;left:24px;bottom:24px;z-index:2147483647;'+
    'background:rgba(10,25,50,.88);color:#fff;font:600 22px/1.35 -apple-system,Segoe UI,Roboto,Arial,sans-serif;'+
-   'padding:10px 20px;border-radius:10px;max-width:1100px;text-align:center;box-shadow:0 4px 18px rgba(0,0,0,.3)';
+   'padding:10px 20px;border-radius:10px;max-width:720px;text-align:left;box-shadow:0 4px 18px rgba(0,0,0,.3)';
    document.body.appendChild(d); }
  d.textContent = t; d.style.display = t ? 'block' : 'none'; }"""
 
@@ -224,9 +224,15 @@ def main():
                 pass
             r.cap("Buyer clicks “Cancel and return” on the real Sandbox checkout")
             page.wait_for_timeout(3000)
-            link = page.get_by_text("Cancel and return", exact=False).first
+            r.cap("")
             try:
-                link.click(timeout=8000)
+                link = page.locator("#cancelLink")
+                if link.count():
+                    link.scroll_into_view_if_needed()
+                    page.wait_for_timeout(500)
+                    link.evaluate("e => e.click()")  # the sticky footer overlaps it in a 720p viewport
+                else:
+                    page.get_by_text("Cancel and return", exact=False).first.click(timeout=8000)
                 page.wait_for_url(a.base + "/**", timeout=30_000)
                 page.wait_for_selector("#kpis .kpi")
                 r.cap("Back in the app: order CANCELLED, reserved budget released")
