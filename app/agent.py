@@ -33,11 +33,14 @@ Rules:
   tell the user a human must approve it. Never split an order into smaller orders to dodge a cap.
 - If the result is DENIED, do not try to work around it; explain why.
 - If the request is ambiguous, pick the cheapest product that clearly matches.
-- If create_order returns AWAITING_PAYER_APPROVAL, the order exists and budget is reserved;
-  tell the user the payer must approve it at the order's approve_url before it is captured.
+- If create_order returns AWAITING_PAYER_APPROVAL, the order exists and budget is reserved but nothing
+  is paid yet; tell the user the payer must approve it at the order's approve_url before it is captured.
+  Never call such an order "bought" or "purchased": write "Order created, awaiting buyer approval".
+- Only an order whose result is ORDER_PLACED (PayPal capture COMPLETED) may be called bought.
 - Do not narrate your reasoning or plans. When done, reply ONLY with the user-facing summary wrapped in
-  <summary></summary>: what was bought (order id, amount), what awaits payer or human approval
-  (order / approval id), what was refused and why. Plain short bullet lines.
+  <summary></summary>: what was bought and paid (order id, amount), which orders were created and await
+  the buyer's PayPal approval, what awaits human approval (approval id), what was refused and why.
+  Plain short bullet lines.
 """
 
 TOOLS: list[dict[str, Any]] = [
@@ -79,6 +82,48 @@ def extract_summary(text: str) -> str:
     return m.group(1).strip() if m else strip_intro(text).strip()
 
 
+_BOUGHT_WORD_RE = re.compile(r"\b(?:bought|purchased)\b", re.IGNORECASE)
+# "not bought yet", "nothing was purchased", "wasn't bought": a negated claim is not a purchase claim
+_NEGATION_RE = re.compile(r"(?:\b(?:not|never|no|nothing|none|yet to be)\b|n't)\W+(?:\w+\W+){0,2}$", re.IGNORECASE)
+AWAITING_LABEL = "Order created, awaiting buyer approval"
+
+
+def _order_statuses(transcript: list[dict[str, Any]]) -> dict[str, str]:
+    """Order id -> status as last reported by a create_order tool result in this run."""
+    out: dict[str, str] = {}
+    for t in transcript:
+        if t.get("role") != "tool" or t.get("name") != "create_order":
+            continue
+        o = (t.get("output") or {}).get("order") or {}
+        if o.get("id"):
+            out[o["id"]] = o.get("status") or ""
+    return out
+
+
+def claims_purchase(text: str) -> bool:
+    """True if the text affirmatively says something was bought/purchased."""
+    for m in _BOUGHT_WORD_RE.finditer(text):
+        # a negation only counts inside the same clause: "Nothing refused. Bought 2 cables" is a claim
+        clause = re.split(r"[.;:!?\n]", text[max(0, m.start() - 40):m.start()])[-1]
+        if not _NEGATION_RE.search(clause):
+            return True
+    return False
+
+
+def correct_paid_wording(summary: str, transcript: list[dict[str, Any]]) -> str:
+    """The model sometimes writes "Bought:" for an order that only exists on PayPal and still
+    waits for the buyer (PAYER_ACTION_REQUIRED). A purchase is only "bought" once its capture is
+    COMPLETED. Prose cannot be attributed to orders reliably (an id-less line, or one line naming
+    a paid and an unpaid order), so when this run created any order that is not COMPLETED and the
+    model claims a purchase, the summary is replaced by the deterministic one built from the tool
+    results, which words every order by its real status (paid / awaiting buyer / unconfirmed /
+    failed). Negated claims ("nothing bought yet") and runs whose orders all completed are kept."""
+    statuses = _order_statuses(transcript)
+    if not any(st != "COMPLETED" for st in statuses.values()) or not claims_purchase(summary):
+        return summary
+    return fallback_summary(transcript) or summary
+
+
 def fallback_summary(transcript: list[dict[str, Any]]) -> str:
     """Deterministic summary built from tool results, used when the model's final
     message is empty (seen live: an empty <summary> after parallel tool calls)."""
@@ -91,9 +136,10 @@ def fallback_summary(transcript: list[dict[str, Any]]) -> str:
         r = out.get("result")
         o = out.get("order") or {}
         if r == "ORDER_PLACED":
-            lines.append(f"- {what}: bought, order {o.get('id')} ${o.get('amount')}")
+            lines.append(f"- {what}: bought and paid, order {o.get('id')} ${o.get('amount')}")
         elif r == "AWAITING_PAYER_APPROVAL":
-            lines.append(f"- {what}: order {o.get('id')} ${o.get('amount')} awaits payer approval at {o.get('approve_url')}")
+            lines.append(f"- {what}: {AWAITING_LABEL.lower()}, order {o.get('id')} ${o.get('amount')}; "
+                         f"not paid until the buyer approves at {o.get('approve_url')}")
         elif r == "APPROVAL_REQUESTED":
             lines.append(f"- {what}: needs human approval ({out.get('approval_id')}): {'; '.join(out.get('reasons', []))}")
         elif r == "DENIED":
@@ -201,7 +247,8 @@ class PurchasingAgent:
                 res.transcript.append({"role": "assistant", "text": "\n".join(texts)})
             tool_uses = [b for b in content if b.get("type") == "tool_use"]
             if resp.get("stop_reason") != "tool_use" or not tool_uses:
-                res.final_text = extract_summary("\n".join(texts)) or fallback_summary(res.transcript)
+                res.final_text = correct_paid_wording(
+                    extract_summary("\n".join(texts)) or fallback_summary(res.transcript), res.transcript)
                 res.stopped_reason = resp.get("stop_reason", "")
                 return res
             results = []

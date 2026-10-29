@@ -73,3 +73,20 @@ Request: *"Order 2 USB-C cables for the new hire's desk"*. 4 model turns, `stop_
   right, and nothing overlaps. The browser console was not inspected.
 - The agent's summary line says "Bought:" for an order that is still waiting for the payer. It is accurate after capture
   but early before it.
+
+### Follow-up: UI fixes for the notes above
+
+- Orders grid: Order, PayPal order and Payment / capture columns are wide enough for the full ids (a 17-character
+  capture id such as `8VA9873790040992M` and the mock's 18-character ones); Item wraps instead of truncating, and ids
+  have tooltips. The page is up to 1840 px wide on large screens.
+- Audit grid: columns flex to the card (12 px text, minimum widths), long values wrap, Request id / Decision id are
+  hidden by default ("show ids" brings them back; search and CSV always include them). The detail panel sits beside
+  the grid at 1800 px and wider and below it otherwise, so Outcome and Payment status stay visible with it open.
+  Checked headless at 1920×1440 and 1280×800: no truncated cell, no horizontal scroll, no hidden column.
+- Header: the approver pill now reads "approval requires token · enter it to approve" while the box is empty and
+  "approval requires token · token entered" after typing (tooltip explains); approvals disabled / open demo mode are
+  shown in a red pill.
+- Agent summary: "Bought" is used only for a `COMPLETED` capture. The Claude prompt says so, and if the model still
+  claims a purchase while any order of the run is not `COMPLETED`, the summary is replaced by the deterministic one
+  built from the tool results ("order created, awaiting buyer approval", "payment outcome unconfirmed", "PayPal order
+  failed", or "bought and paid"). Tests in `tests/test_agent.py`.

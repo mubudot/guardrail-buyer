@@ -3,19 +3,22 @@
   --blue: #0070e0; --navy: #003087; --ok: #138a4c; --warn: #b26b00; --bad: #c0392b;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }  /* .btn's display must not unhide a hidden button */
 body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background: var(--bg); color: var(--ink); }
-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 28px;
+header { display: flex; justify-content: space-between; align-items: center; gap: 10px 20px; flex-wrap: wrap; padding: 14px 28px;
   background: var(--navy); color: #fff; }
-header h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
+header h1 { margin: 0; font-size: 20px; letter-spacing: .2px; white-space: nowrap; }
 header .sub { color: #c7d6f5; font-size: 13px; }
 .title { display: flex; align-items: baseline; gap: 14px; }
-.status { display: flex; gap: 14px; align-items: center; }
+.status { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.pill { white-space: nowrap; }
+.pill.warn { background: #fde8e6; color: #8f2318; border-color: #e7b7b1; font-weight: 600; }
 .pill { background: #ffffff22; border: 1px solid #ffffff44; padding: 3px 10px; border-radius: 999px; font-size: 12px; }
-.token { font-size: 12px; color: #c7d6f5; display: flex; gap: 6px; align-items: center; }
+.token { font-size: 12px; color: #c7d6f5; display: flex; gap: 6px; align-items: center; white-space: nowrap; }
 .token input { width: 140px; padding: 4px 8px; border-radius: 6px; border: 1px solid #ffffff55;
   background: #ffffff18; color: #fff; }
-main { max-width: 1240px; margin: 0 auto; padding: 20px 28px 40px; display: grid; gap: 16px; }
+main { max-width: 1840px; margin: 0 auto; padding: 20px 28px 40px; display: grid; gap: 16px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
 .card h2 { margin: 0 0 10px; font-size: 15px; }
 .row { display: flex; justify-content: space-between; align-items: baseline; }
@@ -42,6 +45,9 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px 28px 40px; display: grid
 .grid { height: 260px; }
 .grid.small, .grid.tiny { height: auto; }
 .ag-theme-quartz { --ag-font-size: 13px; --ag-header-height: 40px; }
+/* two classes so these beat the theme's own variables (one class alone loses) */
+.ag-theme-quartz.grid { --ag-font-size: 13px; --ag-cell-horizontal-padding: 12px; }
+#orders { height: 320px; }
 .st { font-weight: 600; font-size: 12px; }
 .st.COMPLETED, .st.ALLOW, .st.APPROVED { color: var(--ok); }
 .st.PAYER_ACTION_REQUIRED, .st.PENDING, .st.NEEDS_APPROVAL, .st.CREATING, .st.CAPTURING, .st.EXECUTING, .st.NEEDS_RECONCILIATION { color: var(--warn); }
@@ -87,4 +93,17 @@ body.checkout { display: grid; place-items: center; min-height: 100vh; }
 .risk-NEEDS_RECONCILIATION, .ag-theme-quartz .risk-NEEDS_RECONCILIATION { background: #ffe0c2 !important; color: #8a3b00; font-weight: 600; }
 .rule-DENY { color: var(--bad); font-weight: 600; } .rule-NEEDS_APPROVAL { color: var(--warn); font-weight: 600; }
 .rule-PASS { color: var(--ok); } .rule-WAIVED, .rule-SKIPPED { color: var(--muted); }
-@media (max-width: 1000px) { .audit-wrap { flex-direction: column; } .detail { width: 100%; } }
+/* UI E2E fixes: the detail panel sits beside the grid only when both fit; otherwise below it,
+   so every audit column stays visible with the panel open. */
+/* .ag-theme-quartz sets these on the same element; two classes are needed to win */
+.ag-theme-quartz.audit-grid { --ag-cell-horizontal-padding: 10px; --ag-font-size: 12px; }
+/* risk rows keep their colour; only the Decision cell is bold, so row text is not widened */
+.audit-grid .ag-row.risk-DENY, .audit-grid .ag-row.risk-NEEDS_APPROVAL, .audit-grid .ag-row.risk-NEEDS_RECONCILIATION { font-weight: 400; }
+@media (max-width: 1799px) { .audit-wrap { flex-direction: column; align-items: stretch; }
+  .audit-grid { flex: none; width: 100%; }
+  .detail { width: 100%; max-height: 460px; } }
+@media (max-width: 1400px) { header .sub { display: none; } }
+/* wrapped cells: padding chosen so a single line sits where the grid's centred one-line cells do */
+.ag-theme-quartz .wrap-cell { line-height: 1.3; padding-top: 13px; padding-bottom: 13px; word-break: normal; }
+.ag-theme-quartz.audit-grid .wrap-cell { padding-top: 11px; padding-bottom: 11px; }
+#mode { cursor: help; }

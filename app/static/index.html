@@ -17,6 +17,7 @@
   </div>
   <div class="status">
     <span id="mode" class="pill">…</span>
+    <span id="approver-mode" class="pill" hidden></span>
     <label class="token">Approver token
       <input id="token" type="password" placeholder="APPROVER_TOKEN" autocomplete="off">
     </label>
@@ -65,12 +66,13 @@
     <div class="toolbar">
       <input id="audit-search" type="search" placeholder="Search all columns (merchant, rule, request id…)" autocomplete="off">
       <label class="hint"><input id="audit-hide-checks" type="checkbox"> hide read-only checks</label>
+      <label class="hint"><input id="audit-show-ids" type="checkbox"> show ids</label>
       <span class="legend"><i class="risk-DENY"></i>deny <i class="risk-NEEDS_APPROVAL"></i>needs approval <i class="risk-NEEDS_RECONCILIATION"></i>unconfirmed payment</span>
       <button id="audit-csv" class="btn" type="button">Export CSV</button>
     </div>
     <div class="toolbar"><span id="audit-window" class="hint" aria-live="polite"></span>
       <button id="audit-older" class="btn" type="button" hidden>Load older</button></div>
-    <div class="audit-wrap">
+    <div id="audit-wrap" class="audit-wrap">
       <div id="audit" class="ag-theme-quartz grid audit-grid"></div>
       <aside id="audit-detail" class="detail" hidden>
         <div class="row"><h3 id="detail-title">Decision</h3><button id="detail-close" class="btn grid-btn" type="button">Close</button></div>

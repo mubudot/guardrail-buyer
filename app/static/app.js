@@ -45,7 +45,7 @@ async function decide(id, action, btn) {
 }
 const approvalsGrid = agGrid.createGrid($("approvals"), {
   columnDefs: [
-    {field: "id", headerName: "Approval", width: 135, suppressSizeToFit: true},
+    {field: "id", headerName: "Approval", width: 150, suppressSizeToFit: true, tooltipField: "id"},
     {field: "product_name", headerName: "Item", flex: 1, minWidth: 160},
     {field: "quantity", headerName: "Qty", minWidth: 60, maxWidth: 65},
     {field: "amount", headerName: "Amount", minWidth: 90, maxWidth: 95, valueFormatter: (p) => usd(p.value)},
@@ -74,26 +74,31 @@ function payCell(p) {
 const ordersGrid = agGrid.createGrid($("orders"), {
   columnDefs: [
     {field: "created_at", headerName: "Time", width: 100, suppressSizeToFit: true, valueFormatter: time, sort: "desc"},
-    {field: "id", headerName: "Order", width: 160, suppressSizeToFit: true},
-    {field: "product_name", headerName: "Item", flex: 1, minWidth: 150},
+    {field: "id", headerName: "Order", width: 175, suppressSizeToFit: true, tooltipField: "id"},
+    // Item wraps instead of truncating (row grows); the full name is also the tooltip
+    {field: "product_name", headerName: "Item", flex: 1, minWidth: 120, wrapText: true, autoHeight: true,
+      tooltipField: "product_name", cellClass: "wrap-cell"},
     {field: "quantity", headerName: "Qty", minWidth: 60, maxWidth: 65},
     {field: "amount", headerName: "Amount", minWidth: 90, maxWidth: 95, valueFormatter: (p) => usd(p.value)},
-    {headerName: "Policy", minWidth: 110, maxWidth: 115, valueGetter: (p) => p.data.approval_id ? "APPROVED" : (p.data.decision || {}).verdict,
+    {headerName: "Policy", minWidth: 105, maxWidth: 115, valueGetter: (p) => p.data.approval_id ? "APPROVED" : (p.data.decision || {}).verdict,
       cellRenderer: statusCell},
-    {field: "status", headerName: "Status", minWidth: 140, maxWidth: 150, cellRenderer: statusCell},
-    {field: "paypal_order_id", headerName: "PayPal order", width: 195, suppressSizeToFit: true},
-    {headerName: "Payment / capture", minWidth: 160, cellRenderer: payCell, sortable: false},
+    {field: "status", headerName: "Status", minWidth: 145, maxWidth: 150, cellRenderer: statusCell},
+    {field: "paypal_order_id", headerName: "PayPal order", width: 190, suppressSizeToFit: true,
+      tooltipField: "paypal_order_id"},
+    // wide enough for a 17-character capture id (e.g. 8VA9873790040992M) and the Pay button
+    {headerName: "Payment / capture", width: 200, suppressSizeToFit: true, cellRenderer: payCell, sortable: false,
+      tooltipValueGetter: (p) => p.data && p.data.capture_id ? `Capture ${p.data.capture_id}` : null},
   ],
   rowData: [], overlayNoRowsTemplate: "No orders yet: ask the agent above",
   getRowId: (p) => p.data.id,
-  rowHeight: 44, autoSizeStrategy: {type: "fitGridWidth"},
+  rowHeight: 44, tooltipShowDelay: 200, autoSizeStrategy: {type: "fitGridWidth"},
   defaultColDef: {resizable: true, sortable: true},
 });
 
 /* ---------- spend vs caps ---------- */
 const spendGrid = agGrid.createGrid($("spend"), {
   columnDefs: [
-    {field: "rule", headerName: "Guardrail", flex: 1.3},
+    {field: "rule", headerName: "Guardrail", flex: 1.6, tooltipField: "rule"},
     {field: "limit", headerName: "Limit", flex: 0.7, valueFormatter: (p) => usd(p.value)},
     {field: "used", headerName: "Used today", flex: 0.7, valueFormatter: (p) => p.value == null ? "–" : usd(p.value)},
     {field: "remaining", headerName: "Headroom", flex: 0.7, valueFormatter: (p) => p.value == null ? "–" : usd(p.value)},
@@ -112,30 +117,41 @@ const RISK_RULES = {
   "risk-NEEDS_APPROVAL": (p) => p.data && p.data.risk === "NEEDS_APPROVAL",
   "risk-NEEDS_RECONCILIATION": (p) => p.data && p.data.risk === "NEEDS_RECONCILIATION",
 };
+// Columns flex to the grid's width (UI E2E note: the fixed widths overflowed the card and pushed
+// Outcome / Payment status off-screen). The two id columns are hidden by default (both are in the
+// detail panel); "show ids" brings them back. Search and CSV always include them.
+const ID_COLS = ["request_id", "id"];
+const shortStamp = (v) => v ? new Date(v).toLocaleString([], {month: "short", day: "numeric",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false}) : "";
 const auditGrid = agGrid.createGrid($("audit"), {
   columnDefs: [
-    {field: "created_at", headerName: "Timestamp", width: 170, sort: "desc", filter: "agDateColumnFilter",
-      valueFormatter: (p) => p.value ? new Date(p.value).toLocaleString() : "",
+    {field: "created_at", headerName: "Timestamp", flex: 1, minWidth: 135, sort: "desc", filter: "agDateColumnFilter",
+      valueFormatter: (p) => shortStamp(p.value), tooltipValueGetter: (p) => p.value ? new Date(p.value).toLocaleString() : null,
       filterParams: {comparator: (day, v) => { const d = new Date(v); d.setHours(0, 0, 0, 0);
         return d < day ? -1 : d > day ? 1 : 0; }}},
-    {field: "verdict", headerName: "Decision", width: 140, filter: "agTextColumnFilter",
+    {field: "verdict", headerName: "Decision", flex: 0.8, minWidth: 88, filter: "agTextColumnFilter",
       valueFormatter: (p) => ({ALLOW: "allow", NEEDS_APPROVAL: "approval", DENY: "deny"})[p.value] || p.value,
       cellClassRules: {"risk-DENY": (p) => p.value === "DENY", "risk-NEEDS_APPROVAL": (p) => p.value === "NEEDS_APPROVAL"}},
-    {field: "rule_hit", headerName: "Rule hit", width: 190, filter: "agTextColumnFilter", tooltipValueGetter:
-      (p) => (p.data.reasons || []).join("\n")},
-    {field: "amount", headerName: "Amount", width: 110, filter: "agNumberColumnFilter",
+    {field: "rule_hit", headerName: "Rule hit", flex: 1.2, minWidth: 145, filter: "agTextColumnFilter",
+      wrapText: true, autoHeight: true, cellClass: "wrap-cell", tooltipValueGetter:
+      (p) => [p.value, ...(p.data.reasons || [])].filter(Boolean).join("\n")},
+    {field: "product_name", headerName: "Item", flex: 2, minWidth: 150, filter: "agTextColumnFilter", wrapText: true, autoHeight: true, cellClass: "wrap-cell", 
+      valueGetter: (p) => p.data ? `${p.data.quantity} × ${p.data.product_name}` : "", tooltipValueGetter: (p) => p.value},
+    {field: "amount", headerName: "Amount", flex: 0.7, minWidth: 88, filter: "agNumberColumnFilter",
       valueGetter: (p) => p.data ? Number(p.data.amount) : null, valueFormatter: (p) => usd(p.value)},
-    {field: "merchant", headerName: "Merchant", width: 180, filter: "agTextColumnFilter"},
-    {field: "product_name", headerName: "Item", flex: 1, minWidth: 160, filter: "agTextColumnFilter",
-      valueGetter: (p) => p.data ? `${p.data.quantity} × ${p.data.product_name}` : ""},
-    {field: "stage", headerName: "Stage", width: 150, filter: "agTextColumnFilter",
-      valueFormatter: (p) => STAGE[p.value] || p.value},
-    {field: "outcome", headerName: "Outcome", width: 160, filter: "agTextColumnFilter", cellRenderer: statusCell},
-    {field: "order_status", headerName: "Payment status", width: 165, filter: "agTextColumnFilter",
-      cellRenderer: statusCell, cellClassRules: {"risk-NEEDS_RECONCILIATION": (p) => p.value === "NEEDS_RECONCILIATION"}},
-    {field: "request_id", headerName: "Request id", width: 160, filter: "agTextColumnFilter"},
-    {field: "id", headerName: "Decision id", width: 150, filter: "agTextColumnFilter", hide: false},
+    {field: "merchant", headerName: "Merchant", flex: 1.3, minWidth: 110, filter: "agTextColumnFilter", tooltipField: "merchant",
+      wrapText: true, autoHeight: true, cellClass: "wrap-cell"},
+    {field: "stage", headerName: "Stage", flex: 1.1, minWidth: 120, filter: "agTextColumnFilter", wrapText: true, autoHeight: true, cellClass: "wrap-cell", 
+      valueFormatter: (p) => STAGE[p.value] || p.value, tooltipValueGetter: (p) => STAGE[p.value] || p.value},
+    {field: "outcome", headerName: "Outcome", flex: 1.2, minWidth: 190, filter: "agTextColumnFilter", cellRenderer: statusCell,
+      tooltipField: "outcome"},
+    {field: "order_status", headerName: "Payment status", flex: 1.1, minWidth: 135, filter: "agTextColumnFilter",
+      cellRenderer: statusCell, tooltipField: "order_status",
+      cellClassRules: {"risk-NEEDS_RECONCILIATION": (p) => p.value === "NEEDS_RECONCILIATION"}},
+    {field: "request_id", headerName: "Request id", flex: 1, minWidth: 135, filter: "agTextColumnFilter", hide: true},
+    {field: "id", headerName: "Decision id", flex: 1, minWidth: 135, filter: "agTextColumnFilter", hide: true},
   ],
+  includeHiddenColumnsInQuickFilter: true,
   rowData: [], getRowId: (p) => p.data.id, rowClassRules: RISK_RULES,
   defaultColDef: {resizable: true, sortable: true, floatingFilter: true},
   rowSelection: {mode: "singleRow", checkboxes: false, enableClickSelection: true},
@@ -146,6 +162,7 @@ const auditGrid = agGrid.createGrid($("audit"), {
 });
 $("audit-search").addEventListener("input", (e) => auditGrid.setGridOption("quickFilterText", e.target.value));
 $("audit-hide-checks").addEventListener("change", () => auditGrid.onFilterChanged());
+$("audit-show-ids").addEventListener("change", (e) => auditGrid.setColumnsVisible(ID_COLS, e.target.checked));
 // CSV injection (CODEX_REVIEW_4 N4): quoting does not stop a spreadsheet from evaluating a
 // cell that starts with = + - @ TAB or CR. Prefix such text with an apostrophe so it is literal.
 const FORMULA_START = /^[=+\-@\t\r]/;
@@ -160,6 +177,7 @@ function csvCell(p) {
 }
 $("audit-csv").addEventListener("click", () => auditGrid.exportDataAsCsv({
   fileName: `guardrail-audit-${new Date().toISOString().slice(0, 10)}.csv`,
+  allColumns: true,  // the id columns are exported even while hidden
   processCellCallback: csvCell,
   processHeaderCallback: (p) => csvSafe(p.column.getColDef().headerName || p.column.getColId()),
 }));
@@ -184,7 +202,11 @@ const detail = {gen: 0, id: null};
 async function showDecision(id, {quiet = false} = {}) {
   const box = $("audit-detail"), body = $("detail-body");
   const gen = ++detail.gen; detail.id = id;
+  const wasHidden = box.hidden;
   box.hidden = false; $("detail-title").textContent = id;
+  // on narrower screens the panel sits below the grid: bring it into view when it opens
+  if (wasHidden && !quiet && box.scrollIntoView && getComputedStyle($("audit-wrap")).flexDirection === "column")
+    box.scrollIntoView({block: "nearest", behavior: "smooth"});
   if (!quiet) { body.textContent = "Loading…"; $("detail-asof").textContent = ""; }
   let d;
   try { d = await api(`/decisions/${encodeURIComponent(id)}`); }
@@ -270,6 +292,27 @@ for (const tab of document.querySelectorAll(".tab")) {
   });
 }
 
+/* ---------- header mode pill ---------- */
+// "approver token on" next to an empty token box read as a contradiction (UI E2E note). Say what
+// the server requires and whether this browser has a token entered.
+let health = null;
+function approverText(h) {
+  if (h.approver_auth) return tokenInput.value
+    ? ["approval requires token · token entered", "The server requires an approver token to approve, reject or cancel. A token is entered in this browser; the server checks it on each action."]
+    : ["approval requires token · enter it to approve", "The server requires an approver token to approve, reject or cancel. Type it in the Approver token box to act on approvals."];
+  if (h.approver_mode === "disabled")
+    return ["approvals disabled (no APPROVER_TOKEN)", "The server has no APPROVER_TOKEN set, so nobody can approve, reject or cancel."];
+  return ["approvals OPEN (DEMO_MODE)", "DEMO_MODE with an empty APPROVER_TOKEN: anyone can approve, reject or cancel."];
+}
+function renderMode() {
+  if (!health) return;
+  const [txt, tip] = approverText(health);
+  $("mode").textContent = `PayPal: ${health.paypal} · ${health.agent_mode === "offline" ? "OFFLINE rule-based agent (no AI)" : health.model}`;
+  const ap = $("approver-mode");
+  ap.textContent = txt; ap.title = tip; ap.hidden = false;
+}
+tokenInput.addEventListener("input", renderMode);
+
 function kpi(k, v, extra = "") { return `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div>${extra}</div>`; }
 
 let auditRefreshing = null;
@@ -344,8 +387,10 @@ $("ask").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKe
 (async () => {
   const h = await api("/health").catch(() => null);
   if (h) {
-    $("mode").textContent = `PayPal: ${h.paypal} · ${h.agent_mode === "offline" ? "OFFLINE rule-based agent (no AI)" : h.model}${h.approver_auth ? " · approver token on" : (h.approver_mode === "disabled" ? " · approvals disabled (no APPROVER_TOKEN)" : " · approvals OPEN (DEMO_MODE)")}`;
+    health = h;
+    renderMode();
     if (h.agent_mode === "offline") $("mode").classList.add("offline");
+    if (h.approver_mode !== "token") $("approver-mode").classList.add("warn");
   }
   const q = new URLSearchParams(location.search);
   if (q.get("paid")) toast(q.get("status") === "PAYER_ACTION_REQUIRED"
