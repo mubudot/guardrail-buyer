@@ -75,7 +75,8 @@ tab were added after recording (README: "Use it from any MCP agent", repro step 
   claimed once and bound to the exact quote (product, quantity, amount, currency, merchant).
 - **AI:** Claude (`claude-sonnet-5-5`) through the Anthropic Messages API with four tools:
   `search_catalog`, `check_policy`, `create_order`, `request_approval`. The model never sees PayPal
-  credentials.
+  credentials. Bring your own model: `LLM_PROVIDER=openai` speaks OpenAI-compatible Chat Completions
+  with tool calling (OpenAI, OpenRouter, DeepSeek, vLLM, Ollama), with the same tools behind the same policy.
 - **MCP server:** `python -m app.mcp_server`, stdio JSON-RPC 2.0 (MCP revisions 2025-06-18 / 2025-03-26 /
   2024-11-05), no SDK dependency, checked against the official MCP Python SDK. Remote mode forwards each
   call to the GuardRail server (`POST /tools/{name}`), where a strict schema gateway (`GuardedTools`,
@@ -94,7 +95,7 @@ tab were added after recording (README: "Use it from any MCP agent", repro step 
   owner saved first, change history) and a spend-over-time chart).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 355 pytest tests (352 run with Python alone; 1 dashboard-logic test needs node, 1 headless UI
+- **Tests:** 404 pytest tests (401 run with Python alone; 1 dashboard-logic test needs node, 1 headless UI
   test needs node + jsdom, 1 interop test needs the official MCP SDK): guardrails, payment flow, reservations/expiry, ambiguous PayPal outcomes and
   reconciliation, API, agent loop with a scripted fake LLM, offline mode, thread/barrier concurrency tests
   for budget races, double approvals and cancel-vs-capture, MCP protocol + end-to-end stdio sessions
@@ -195,7 +196,7 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 353 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
+python -m pytest -q                      # 402 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card
@@ -213,6 +214,9 @@ uvicorn app.main:app --port 8000
   (or run the `unset …` line from the README's *Switching modes*).
 - **With Claude:** put an Anthropic API key in `.env` (`ANTHROPIC_API_KEY`) and leave `AGENT_MODE`
   unset; free-form requests then work.
+- **With your own model:** any OpenAI-compatible endpoint works too: `LLM_PROVIDER=openai`,
+  `OPENAI_BASE_URL` (default `https://api.openai.com/v1`), `OPENAI_API_KEY`, `OPENAI_MODEL` (README:
+  *Bring your own model*).
 - **With the real PayPal Sandbox:** create a free Sandbox REST app at developer.paypal.com (Apps &
   Credentials → Sandbox), set `PAYPAL_MODE=sandbox`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` in
   `.env`, and pay with a Sandbox *personal* test account (Testing Tools → Sandbox Accounts).

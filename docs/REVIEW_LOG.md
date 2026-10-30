@@ -158,3 +158,22 @@ Codex re-verify: M1, M2, M4, M5 fixed; M3 fixed for ordinary stale saves. Two fo
 
 Not sent to Codex a third time (loop limit); verified by the suite (`353 passed, 2 skipped`) and the probes
 turned into regression tests.
+
+## Bring your own model (2026-10-30)
+
+`app/llm/`: Anthropic Messages (`ANTHROPIC_API_KEY` or, new, `ANTHROPIC_AUTH_TOKEN` as Bearer) and any
+OpenAI-compatible Chat Completions endpoint with tool calling (`LLM_PROVIDER=openai`, `OPENAI_BASE_URL`,
+`OPENAI_API_KEY`, `OPENAI_MODEL`). The agent loop keeps Anthropic-shaped messages; the OpenAI adapter
+translates requests and responses, so the four tools and `BuyerService` are unchanged. Pure-move refactor:
+`Catalog` → `app/catalog.py`, `Store` → `app/store.py` (re-exported from `app/service.py`). Mocked-HTTP tests in
+`tests/test_llm_providers.py`. Live smoke, one CLI run per provider (mock PayPal, `claude-sonnet-5-5` through a
+gateway that serves both formats): both bought the cable (ORDER_PLACED) and requested approval for the keyboard.
+
+| ID | Source | Finding | Fix |
+|---|---|---|---|
+| L1 | Codex (medium) | A malformed Chat Completions reply (non-numeric usage, odd tool-call shapes) raised outside `LLMError`, losing the partial result after an order. | Defensive parsing; malformed shapes are an `LLMError`, so the run reports what was already ordered (+tests, incl. purchase-then-garbage). |
+| L2 | Codex (medium) | `raise … from e` kept the raw transport exception; an uncaught CLI error printed it in a traceback. | `from None` in both providers; the CLI prints the redacted `LLMError` and exits 1 (+2 tests). |
+| L3 | Codex (low) | Numbers / booleans as tool arguments became `{}`. | Only a JSON object is accepted; blank = no arguments; anything else is refused before a tool runs (+12 cases). |
+| L4 | Codex (low) | Placeholder hosts in a test and the README. | `localhost` / `<Messages-compatible base URL>`. |
+
+Not re-sent to Codex (one review per change, by plan); verified by the suite (`402 passed, 2 skipped`).

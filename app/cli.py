@@ -21,6 +21,7 @@ os.environ.setdefault("GRB_NO_AUTOAPP", "1")
 
 from .offline_agent import make_agent  # noqa: E402
 from .main import build_service  # noqa: E402
+from .llm import LLMError  # noqa: E402
 from .service import MockLockError  # noqa: E402
 
 
@@ -39,6 +40,9 @@ def main(argv: list[str]) -> int:
         return 3
     try:
         return _run(svc, argv)
+    except LLMError as e:  # already redacted; no traceback (it could carry the raw upstream error)
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
     finally:
         svc.release_mock_lock()
 

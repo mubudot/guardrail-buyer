@@ -42,13 +42,15 @@ is listed under [Known limitations](#known-limitations).
 natural-language request                     any MCP client (Claude Desktop, Codex, …)
         │                                              │ stdio JSON-RPC
         ▼                                              ▼
- Claude agent (Messages API, tool use)        MCP server (no credentials)       app/mcp_server.py
-   app/agent.py                                        │ POST /tools/{name}
+ LLM agent (tool use)                         MCP server (no credentials)       app/mcp_server.py
+   app/agent.py + app/llm/ (Anthropic |                │ POST /tools/{name}
+     OpenAI-compatible provider)                       │
    tools: search_catalog · check_policy ·              ▼
           create_order · request_approval      GuardedTools: strict schemas      app/tool_gateway.py
         │                                              │
         ▼                                              ▼
- BuyerService ── guardrail engine (pure) ── SpendLedger (SQLite)   app/service.py, app/guardrails.py
+ BuyerService ── guardrail engine (pure) ── SpendLedger (SQLite)   app/service.py, app/guardrails.py,
+                                                                   app/store.py, app/catalog.py
         │
         ▼
  PayPalClient: MockPayPal | SandboxPayPal (Orders v2)              app/paypal_client.py
@@ -157,7 +159,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 353 passed, 2 skipped (jsdom UI test, optional MCP SDK interop; 3 skipped without node)
+python -m pytest -q                                     # -> 402 passed, 2 skipped (jsdom UI test, optional MCP SDK interop; 3 skipped without node)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -220,6 +222,31 @@ cp .env.example .env               # then put your Anthropic key in ANTHROPIC_AP
 `.env` is loaded automatically (python-dotenv); real environment variables win.
 The defaults run with a **mock PayPal** (no PayPal account, no network) and the Claude agent.
 
+### Bring your own model
+
+The agent works with either API format; pick one with `LLM_PROVIDER` (unset: `anthropic` if
+`ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` is set, else `openai` if `OPENAI_API_KEY` is set). Both
+providers (`app/llm/`) offer the model the same four tools, and every tool call still goes through
+`BuyerService`, so the spend policy decides about money whichever model you plug in. Without any model,
+use `AGENT_MODE=offline` (above).
+
+```bash
+# (a) Anthropic Messages API, or any Messages-compatible endpoint
+LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-…  MODEL=claude-sonnet-5-5
+#   optional: ANTHROPIC_BASE_URL=<Messages-compatible base URL>  ANTHROPIC_AUTH_TOKEN=… (sent as Bearer instead of x-api-key)
+
+# (b) OpenAI-compatible Chat Completions with tool calling
+LLM_PROVIDER=openai OPENAI_API_KEY=sk-…  OPENAI_MODEL=<model id>                    # OpenAI (default base https://api.openai.com/v1)
+LLM_PROVIDER=openai OPENAI_BASE_URL=https://openrouter.ai/api/v1 OPENAI_API_KEY=sk-or-…  OPENAI_MODEL=<provider/model>   # OpenRouter
+LLM_PROVIDER=openai OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=<local model with tool support>  # Ollama (no key)
+#   DeepSeek, vLLM, LM Studio or a gateway work the same way: set OPENAI_BASE_URL to the server's /v1 base.
+#   Newer OpenAI models want max_completion_tokens: OPENAI_MAX_TOKENS_PARAM=max_completion_tokens (or none)
+```
+
+Put the lines in `.env` or prefix `python -m app.cli "…"` / `uvicorn app.main:app` with them. The model must
+support tool (function) calling. Upstream errors are reduced to a known error type and a short message;
+any configured secret or key-like token is withheld or masked before it can reach a client.
+
 > **About the offline agent.** `AGENT_MODE=offline` swaps Claude for a small deterministic, rule-based
 > parser (`app/offline_agent.py`, clearly **not** AI) with a **positive-only grammar**:
 > `[buy|get|order|purchase|need] <quantity> <catalog item> [for/as <short purpose>]`, clauses joined by
@@ -238,7 +265,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `353 passed, 2 skipped` (no network, no API key needed; the skips need jsdom / the official `mcp` SDK; without `node` one more test is skipped).
+1. **Run the tests** — `python -m pytest -q` → see `402 passed, 2 skipped` (no network, no API key needed; the skips need jsdom / the official `mcp` SDK; without `node` one more test is skipped).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -470,9 +497,15 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 
 | Env var | Default | Notes |
 |---|---|---|
+| `LLM_PROVIDER` | auto | `anthropic` or `openai` (see *Bring your own model*); unset = from the credential that is set |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | any Messages-API-compatible endpoint |
 | `ANTHROPIC_API_KEY` | – | sent as `x-api-key` if set; leave unset behind a gateway that injects auth on the wire |
-| `MODEL` | `claude-sonnet-5-5` | |
+| `ANTHROPIC_AUTH_TOKEN` | – | alternative to the key, sent as `Authorization: Bearer` |
+| `MODEL` | `claude-sonnet-5-5` | model for the Anthropic provider |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | any OpenAI-compatible Chat Completions base (OpenRouter, DeepSeek, vLLM, Ollama, a gateway) |
+| `OPENAI_API_KEY` | – | sent as `Authorization: Bearer`; optional for local servers |
+| `OPENAI_MODEL` | – (required for `openai`) | model id the endpoint serves |
+| `OPENAI_MAX_TOKENS_PARAM` | `max_tokens` | `max_completion_tokens` for newer OpenAI models, `none` to omit |
 | `AGENT_MODE` | `claude` | `offline` = deterministic rule-based parser, no AI and no key (for judges / CI) |
 | `PAYPAL_MODE` | `mock` | `sandbox` uses the real PayPal Sandbox |
 | `PAYPAL_MOCK_APPROVAL` | `0` | mock only: `1` = orders wait for a simulated buyer approval |
@@ -503,6 +536,7 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 - [x] AG Grid dashboard for orders, approvals and spend, approver token
 - [x] AG Grid **Audit** tab: every guardrail decision with column filters, quick search, risk highlighting, CSV export and a detail panel (quote, rules evaluated, payment timeline)
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
+- [x] Bring your own model: Anthropic Messages or any OpenAI-compatible endpoint (`LLM_PROVIDER`)
 - [x] Demo video: final cut 2:23 with the real Sandbox buyer approval (YouTube link on the Devpost page)
 - [x] MCP server: the guarded tools for any MCP agent (Claude Desktop, Codex …), remote + embedded offline modes, prompt-injection tests, live Codex run ([`docs/MCP_LIVE_SMOKE.md`](docs/MCP_LIVE_SMOKE.md)) — added after the video was recorded
 - [x] AG Grid **Policy & spend** tab: owner-token protected policy editor with server validation and change history, spend-over-time chart (AG Charts Community) — added after the video was recorded

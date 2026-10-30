@@ -1,7 +1,9 @@
-"""Claude purchasing agent using the Anthropic Messages API with tool use.
+"""LLM purchasing agent with tool use: Anthropic Messages API (default) or any
+OpenAI-compatible Chat Completions endpoint (LLM_PROVIDER=openai).
 
-The agent never touches PayPal directly: its tools call BuyerService, which
-enforces the guardrail policy server-side.
+The agent loop speaks Anthropic-shaped messages internally; the OpenAI provider translates
+requests and responses at the HTTP boundary. Either way the agent never touches PayPal directly:
+its tools call BuyerService, which enforces the guardrail policy server-side.
 """
 from __future__ import annotations
 
@@ -12,12 +14,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import httpx
-
+from .llm import LLMError, select_provider
+from .llm.anthropic import anthropic_post
+from .llm.openai import openai_post
 from .paypal_client import PayPalError
 from .service import BuyerService
 
-DEFAULT_BASE_URL = "https://api.anthropic.com"
 DEFAULT_MODEL = "claude-sonnet-5-5"
 MAX_TURNS = 8
 
@@ -162,10 +164,6 @@ def strip_intro(text: str) -> str:
     return out if out.strip() else text
 
 
-class LLMError(RuntimeError):
-    pass
-
-
 def json_safe(obj: Any) -> Any:
     """Replace non-finite floats (a model can emit 1e309 -> inf) by their string form, so the
     tool input can be echoed in the transcript / HTTP response and sent back to the model
@@ -177,57 +175,6 @@ def json_safe(obj: Any) -> Any:
     if isinstance(obj, list):
         return [json_safe(v) for v in obj]
     return obj
-
-
-def anthropic_post(payload: dict[str, Any], base_url: str | None = None, timeout: float = 90.0) -> dict[str, Any]:
-    """POST /v1/messages. The API key is read from ANTHROPIC_API_KEY if set; when
-    calling through a gateway that injects auth on the wire, leave it unset."""
-    base = (base_url or os.environ.get("ANTHROPIC_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-    headers = {"anthropic-version": "2023-06-01", "content-type": "application/json"}
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if key:
-        headers["x-api-key"] = key
-    try:
-        r = httpx.post(f"{base}/v1/messages", json=payload, headers=headers, timeout=timeout)
-    except httpx.TransportError as e:
-        raise LLMError(f"Messages API transport error: {type(e).__name__}") from e
-    if r.status_code != 200:
-        hint = ""
-        if r.status_code in (401, 403) and not key:
-            # judge without a key (review log R2): say how to proceed instead of a bare 401
-            hint = (" -- no ANTHROPIC_API_KEY is set: put your key in .env, or restart with "
-                    "AGENT_MODE=offline for the rule-based agent (no AI, no key)")
-        raise LLMError(f"Messages API HTTP {r.status_code}: {_safe_error_detail(r, key)}{hint}")
-    return r.json()
-
-
-_SECRETISH = re.compile(r"(sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+|[A-Za-z0-9_-]{40,})")
-# Documented Messages API error types; anything else is reported as unknown_error.
-_ERROR_TYPES = frozenset({"invalid_request_error", "authentication_error", "billing_error", "permission_error",
-                          "not_found_error", "request_too_large", "rate_limit_error", "timeout_error", "api_error",
-                          "overloaded_error"})
-
-
-def _safe_error_detail(r: httpx.Response, key: str | None) -> str:
-    """What an upstream error may show to an anonymous /agent/request caller (HTTP 502): only a known
-    Messages API `error.type` and a short `error.message`, never the raw body (a gateway may echo
-    headers or keys there). If the message contains any configured secret it is withheld entirely;
-    otherwise key-like tokens are masked."""
-    try:
-        err = r.json().get("error") or {}
-        etype, msg = err.get("type"), err.get("message")
-    except (ValueError, AttributeError):
-        return "non-JSON error body (not shown)"
-    # Only plain strings are shown: str() of an object/list would re-encode (escape) a secret so the
-    # substring check below could miss it.
-    msg = msg if isinstance(msg, str) else ""
-    etype = etype if isinstance(etype, str) and etype in _ERROR_TYPES else "unknown_error"
-    secrets_ = [v for v in (key, os.environ.get("PAYPAL_CLIENT_SECRET"), os.environ.get("APPROVER_TOKEN"),
-                            os.environ.get("STATE_SECRET"), os.environ.get("PAYPAL_CLIENT_ID")) if v]
-    if any(v in msg for v in secrets_):
-        return f"{etype} (message withheld: it contained a configured secret)"
-    msg = _SECRETISH.sub("[redacted]", msg)
-    return f"{etype}: {msg[:200]}" if msg else etype
 
 
 @dataclass
@@ -249,8 +196,14 @@ class PurchasingAgent:
                  post: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
                  max_turns: int = MAX_TURNS, max_tokens: int = 1024):
         self.service = service
-        self.model = model or os.environ.get("MODEL") or DEFAULT_MODEL
-        self.post = post or anthropic_post
+        self.provider = "custom" if post else select_provider()
+        if self.provider == "openai":
+            self.model = model or os.environ.get("OPENAI_MODEL") or ""
+            if not self.model:
+                raise ValueError("set OPENAI_MODEL for LLM_PROVIDER=openai (the model id your endpoint serves)")
+        else:
+            self.model = model or os.environ.get("MODEL") or DEFAULT_MODEL
+        self.post = post or (openai_post if self.provider == "openai" else anthropic_post)
         self.max_turns, self.max_tokens = max_turns, max_tokens
 
     @staticmethod
@@ -275,6 +228,8 @@ class PurchasingAgent:
         s = self.service
         if not isinstance(args, dict):
             return {"error": "tool input must be an object"}
+        if args.get("_invalid_arguments") is True:
+            return {"error": "tool arguments were not a valid JSON object; call the tool again with valid JSON"}
         try:
             if name == "search_catalog":
                 return {"products": s.catalog.search(args.get("query", ""), args.get("category"), args.get("max_price"))}
