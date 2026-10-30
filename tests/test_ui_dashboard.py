@@ -56,7 +56,7 @@ def test_summary_cards_approval_dialog_and_banner(tmp_path):
     svc.store.conn.close()
 
     port = _free_port()
-    env = {**os.environ, "PYTHONPATH": str(ROOT), "GRB_NO_DOTENV": "1", "DB_PATH": str(db),
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")])), "GRB_NO_DOTENV": "1", "DB_PATH": str(db),
            "AGENT_MODE": "offline", "PAYPAL_MODE": "mock", "APPROVER_TOKEN": "tok"}
     env.pop("GRB_NO_AUTOAPP", None)
     srv = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",
@@ -90,10 +90,11 @@ def test_summary_cards_approval_dialog_and_banner(tmp_path):
 
 HELPERS = r"""
 const fs = require('fs'), vm = require('vm');
-const ctx = {document: {getElementById() { return null; }}, Intl, Number, String, Object, Math, console};
+const ctx = {document: {getElementById() { return null; }}, Intl, Number, String, Object, Math, console, URL,
+  location: {href: 'http://127.0.0.1:8000/'}};
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[2], 'utf8') +
-  ';globalThis.__t = {usd, statusCell, toneOf, statusLabel, escapeHtml, pct};', ctx);
+  ';globalThis.__t = {usd, statusCell, toneOf, statusLabel, escapeHtml, pct, safeUrl};', ctx);
 const t = ctx.__t;
 console.log(JSON.stringify({
   usd: [t.usd('25.98'), t.usd(1234.5), t.usd(null), t.usd(''), t.usd('abc'), t.usd('0')],
@@ -103,6 +104,7 @@ console.log(JSON.stringify({
   tones: ['COMPLETED', 'NEEDS_APPROVAL', 'DENY', 'AWAITING_PAYER_APPROVAL', 'SOMETHING_NEW'].map(t.toneOf),
   label: t.statusLabel('CAPTURE_FAILED'),
   pct: [t.pct(25.98, 150), t.pct(500, 150), t.pct(5, 0), t.pct(-1, 10)],
+  urls: ['https://www.sandbox.paypal.com/checkoutnow?token=X', '/paypal/mock-checkout?token=M', 'javascript:alert(1)', 'data:text/html,x', null].map(t.safeUrl),
 }));
 """
 
@@ -121,3 +123,7 @@ def test_ui_formatting_helpers(tmp_path):
     assert out["tones"] == ["ok", "warn", "bad", "warn", "neutral"]
     assert out["label"] == "CAPTURE FAILED"
     assert out["pct"][0] == pytest.approx(17.32) and out["pct"][1:] == [100, 0, 0]
+    # only http(s) checkout links are linked / opened
+    assert out["urls"][:2] == ["https://www.sandbox.paypal.com/checkoutnow?token=X",
+                               "http://127.0.0.1:8000/paypal/mock-checkout?token=M"]
+    assert out["urls"][2:4] == [None, None]

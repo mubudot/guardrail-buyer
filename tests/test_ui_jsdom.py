@@ -71,7 +71,7 @@ def test_audit_tab_review4(tmp_path):
     svc.store.conn.close()
 
     port = _free_port()
-    env = {**os.environ, "PYTHONPATH": str(ROOT), "GRB_NO_DOTENV": "1", "DB_PATH": str(db),
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")])), "GRB_NO_DOTENV": "1", "DB_PATH": str(db),
            "CATALOG_PATH": str(cat_path), "AGENT_MODE": "offline", "PAYPAL_MODE": "mock", "APPROVER_TOKEN": "tok"}
     env.pop("GRB_NO_AUTOAPP", None)
     srv = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1",

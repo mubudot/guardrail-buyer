@@ -60,7 +60,7 @@
       columnDefs: [
         {field: "name", headerName: kind === "merchant" ? "Merchant" : "Category", flex: 1.6, filter: true},
         {field: "products", headerName: "Items", flex: 0.6, minWidth: 82, type: "numericColumn"},
-        {headerName: "Status", colId: "status", flex: 1, editable: true, singleClickEdit: true,
+        {headerName: "Status", colId: "status", flex: 1, minWidth: 128, editable: true, singleClickEdit: true,
          cellEditor: "agSelectCellEditor", cellEditorParams: {values},
          valueGetter: (p) => statusOf(kind, p.data.name),
          valueSetter: (p) => { setStatus(kind, p.data.name, p.newValue); renderDirty(); return true; },

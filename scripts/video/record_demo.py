@@ -183,6 +183,43 @@ def sandbox_buyer_pay(page, r, base, email, password):
         r.cuts.append([round(t_pay + 1.2, 2), round(r.now() - 0.6, 2)])
 
 
+def record_checkout(page, r, a, notes):
+    """Scenes s5_checkout + s5_return: the real Sandbox checkout for the cable order, and (with
+    SANDBOX_BUYER_EMAIL / SANDBOX_BUYER_PASSWORD) the buyer's login, Pay and the capture."""
+    orders = json.loads(LOCAL.open(a.base + "/orders").read())
+    cable = next((o for o in orders if o["product_id"] == "P-1001" and o.get("approve_url")), None)
+    buyer = (os.environ.get("SANDBOX_BUYER_EMAIL"), os.environ.get("SANDBOX_BUYER_PASSWORD"))
+    paid = False
+    r.start("s5_checkout")
+    if cable:
+        page.goto(cable["approve_url"], timeout=60_000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=20_000)
+        except Exception:
+            pass
+        r.cap(f"Real PayPal Sandbox checkout for {cable['id']} (${cable['amount']}) · sandbox, no real money")
+        if all(buyer):
+            page.wait_for_timeout(1500)
+            try:
+                sandbox_buyer_pay(page, r, a.base, *buyer)
+                paid = True
+            except Exception as e:
+                notes.append(f"sandbox buyer login/pay failed: {type(e).__name__}: {str(e).splitlines()[0][:120]}")
+    else:
+        notes.append("no PAYER_ACTION_REQUIRED cable order found (agent may have chosen differently)")
+    r.end()
+    if paid:
+        r.start("s5_return")
+        r.cap("PayPal redirects to /paypal/return → the app captures → COMPLETED")
+        page.wait_for_timeout(3500)
+        page.locator("#orders").scroll_into_view_if_needed()
+        page.wait_for_timeout(1200)
+        r.cap("Order COMPLETED with its PayPal capture id · reserved → captured spend")
+        r.end(pad=1.5)
+    else:
+        r.card("s5_return")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://localhost:8011")
@@ -191,6 +228,9 @@ def main():
     ap.add_argument("--out", default="build/video")
     ap.add_argument("--request", default=DEMO_REQUEST)
     ap.add_argument("--chromium", default="/usr/bin/chromium")
+    ap.add_argument("--skip-checkout", action="store_true",
+                    help="do not record scenes s5_checkout / s5_return (e.g. when a separately recorded "
+                         "Sandbox buyer clip is spliced in at assembly time)")
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     durs = json.loads(Path(a.durations).read_text())["durations"]
@@ -219,7 +259,9 @@ def main():
         page.dispatch_event("#token", "change")
         page.wait_for_selector("#kpis .kpi")
         r.cap("Live dashboard · PayPal mode: Sandbox (api-m.sandbox.paypal.com)")
-        page.hover("#kpis")
+        page.hover("#kpis [data-kpi=spend]")
+        page.wait_for_timeout(3500)
+        page.hover("#kpis [data-kpi=blocked]")
         r.end()
 
         # s4 ask the agent
@@ -229,7 +271,7 @@ def main():
         page.type("#ask", a.request, delay=22)
         page.click("#ask-btn")
         r.cap("Claude is calling tools: search_catalog → check_policy → create_order / request_approval")
-        page.wait_for_selector("#answer .steps", timeout=180_000)
+        page.wait_for_selector("#answer .final", timeout=180_000)
         t_ans = r.now()
         narr_end = r.cur["start"] + durs["s4_ask"] + 0.5
         if t_ans - 0.8 > narr_end + 0.5:
@@ -240,46 +282,21 @@ def main():
 
         r.start("s4_result")
         r.cap("ALLOW → real Sandbox order · over cap → approval request · blocked → refused")
-        page.locator("#answer").scroll_into_view_if_needed()
-        page.wait_for_timeout(4500)
-        page.mouse.wheel(0, 420)
+        page.locator("#answer .outcomes").evaluate("e => e.scrollIntoView({behavior: 'smooth', block: 'center'})")
         page.wait_for_timeout(4000)
-        page.mouse.wheel(0, 380)
+        page.click("#answer .trace summary")  # expand the full tool trace for a moment
+        page.locator("#answer .steps").evaluate("e => e.scrollIntoView({behavior: 'smooth', block: 'center'})")
+        page.wait_for_timeout(3000)
+        page.locator("#kpis").evaluate("e => e.scrollIntoView({behavior: 'smooth', block: 'start'})")
+        page.wait_for_timeout(4000)
+        page.locator("#orders").evaluate("e => e.scrollIntoView({behavior: 'smooth', block: 'center'})")
         r.end()
 
         # s5 real Sandbox checkout for the ALLOWed order
-        orders = json.loads(LOCAL.open(a.base + "/orders").read())
-        cable = next((o for o in orders if o["product_id"] == "P-1001" and o.get("approve_url")), None)
-        buyer = (os.environ.get("SANDBOX_BUYER_EMAIL"), os.environ.get("SANDBOX_BUYER_PASSWORD"))
-        paid = False
-        r.start("s5_checkout")
-        if cable:
-            page.goto(cable["approve_url"], timeout=60_000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=20_000)
-            except Exception:
-                pass
-            r.cap(f"Real PayPal Sandbox checkout for {cable['id']} (${cable['amount']}) · sandbox, no real money")
-            if all(buyer):
-                page.wait_for_timeout(1500)
-                try:
-                    sandbox_buyer_pay(page, r, a.base, *buyer)
-                    paid = True
-                except Exception as e:
-                    notes.append(f"sandbox buyer login/pay failed: {type(e).__name__}: {str(e).splitlines()[0][:120]}")
+        if a.skip_checkout:
+            notes.append("s5 skipped (--skip-checkout)")
         else:
-            notes.append("no PAYER_ACTION_REQUIRED cable order found (agent may have chosen differently)")
-        r.end()
-        if paid:
-            r.start("s5_return")
-            r.cap("PayPal redirects to /paypal/return → the app captures → COMPLETED")
-            page.wait_for_timeout(3500)
-            page.locator("#orders").scroll_into_view_if_needed()
-            page.wait_for_timeout(1200)
-            r.cap("Order COMPLETED with its PayPal capture id · reserved → captured spend")
-            r.end(pad=1.5)
-        else:
-            r.card("s5_return")
+            record_checkout(page, r, a, notes)
 
         # s6 approve the keyboard
         r.start("s6_approve")
@@ -292,9 +309,16 @@ def main():
         if btn.count():
             btn.hover()
             page.wait_for_timeout(800)
+            btn.click()  # opens the confirmation dialog: item, amount, rule hit, what happens next
+            page.wait_for_selector("#modal:not([hidden])")
+            r.cap("Review: item, amount, rule hit, agent's justification")
+            page.wait_for_timeout(3500)
+            ok = page.locator("#modal-confirm")
+            ok.hover()
+            page.wait_for_timeout(700)
             try:
                 with ctx.expect_page(timeout=8000) as pop:
-                    btn.click()
+                    ok.click()
                 pop.value.close()  # the dashboard opens the PayPal checkout in a new tab
             except Exception:
                 pass

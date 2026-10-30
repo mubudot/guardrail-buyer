@@ -12,6 +12,10 @@ const empty = (title, hint) =>
   `<div class="empty"><div class="empty-t">${escapeHtml(title)}</div><div class="empty-h">${escapeHtml(hint)}</div></div>`;
 const GRID_BASE = {loading: true, tooltipShowDelay: 200, suppressCellFocus: false,
                    overlayLoadingTemplate: '<div class="empty"><span class="spinner" aria-hidden="true"></span>Loading…</div>'};
+// on a phone-width grid the internal ids give way to item, amount and the action buttons
+const hideWhenNarrow = (cols) => (e) => e.api.setColumnsVisible(cols, e.clientWidth >= 700);
+const APPROVALS_EMPTY = empty("Nothing waiting for you", "Requests over a cap appear here for a human decision.");
+const ORDERS_EMPTY = empty("No orders yet", "Ask the agent above: orders within your caps appear here.");
 // small grids grow with their rows; past `max` rows they keep a fixed height and scroll
 function fitRows(api, elId, n, max) {
   const auto = n <= max;
@@ -20,18 +24,44 @@ function fitRows(api, elId, n, max) {
   $(elId).classList.toggle("has-rows", n > 0);
 }
 
+// Tab / Shift+Tab move through the buttons or links inside a cell before the grid moves on
+// (AG Grid otherwise jumps straight to the next cell and skips them).
+function tabThroughControls(params) {
+  const e = params.event;
+  if (e.key !== "Tab" || e.type !== "keydown") return false;
+  const cell = e.target.closest && e.target.closest(".ag-cell");
+  const ctl = cell ? [...cell.querySelectorAll("button:not([disabled]), a[href]")] : [];
+  if (!ctl.length) return false;
+  const i = ctl.indexOf(document.activeElement);
+  const j = e.shiftKey ? (i > 0 ? i - 1 : -2) : (i < ctl.length - 1 ? i + 1 : -2);
+  if (j < 0) return false;
+  e.preventDefault(); ctl[j].focus(); return true;
+}
+
 /* ---------- approvals ---------- */
-function approvalButtons(p) {
-  const wrap = document.createElement("span");
-  if (p.data.status !== "PENDING") return wrap;
-  for (const [label, cls, action] of [["Approve", "ok", "approve"], ["Reject", "bad", "reject"]]) {
-    const b = document.createElement("button");
-    b.type = "button"; b.className = `btn grid-btn ${cls}`; b.textContent = label;
-    b.setAttribute("aria-label", `${label} ${p.data.id}: ${p.data.quantity} × ${p.data.product_name}, ${usd(p.data.amount)}`);
-    b.onclick = () => reviewApproval(p.data, action, b);
-    wrap.appendChild(b);
+// Class renderer with refresh(): a 5-second poll keeps the same buttons (and keyboard focus).
+class ApprovalButtons {
+  init(p) {
+    this.p = p; this.gui = document.createElement("span");
+    for (const [label, cls, action] of [["Approve", "ok", "approve"], ["Reject", "bad", "reject"]]) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = `btn grid-btn ${cls}`; b.textContent = label;
+      b.dataset.id = p.data.id; b.dataset.action = action;
+      b.onclick = () => reviewApproval(this.p.data, action, b);
+      this.gui.appendChild(b);
+    }
+    this.refresh(p);
   }
-  return wrap;
+  getGui() { return this.gui; }
+  refresh(p) {
+    this.p = p;
+    const d = p.data;
+    for (const b of this.gui.children) {
+      b.hidden = d.status !== "PENDING";
+      b.setAttribute("aria-label", `${b.textContent} ${d.id}: ${d.quantity} × ${d.product_name}, ${usd(d.amount)}`);
+    }
+    return true;
+  }
 }
 // Approval flow: a confirmation dialog shows what is being approved, which rule it hit and what
 // happens next, and asks for the approver token when the server needs one and none is entered.
@@ -50,7 +80,10 @@ async function reviewApproval(a, action, btn) {
     notes: approve ? ["The server re-checks the deny rules and the hard maximum first.",
                       "Then it creates a PayPal order; nothing is charged until the buyer approves it on PayPal."] : [],
     confirmLabel: approve ? "Approve & create PayPal order" : "Reject request",
-    tone: approve ? "ok" : "danger", needsToken});
+    tone: approve ? "ok" : "danger", needsToken,
+    // the poll may have re-rendered the row: find the same action again, else the approvals heading
+    returnFocus: () => [...document.querySelectorAll("#approvals button[data-action]")]
+      .find((b) => b.dataset.id === a.id && b.dataset.action === action && !b.hidden) || $("approvals-title")});
   if (ok) await decide(a.id, action, btn);
 }
 async function decide(id, action, btn) {
@@ -61,7 +94,8 @@ async function decide(id, action, btn) {
     const o = r.order;
     if (o && o.approve_url) toast(`${id} approved → order ${o.id} awaits payer approval on PayPal`, "ok");
     else toast(`${id}: ${r.result}${o ? " · " + o.id : ""}`);
-    if (o && o.approve_url) window.open(o.approve_url, "_blank");
+    const url = o && safeUrl(o.approve_url);
+    if (url) window.open(url, "_blank", "noopener");
   } catch (e) { toast(`${action} failed: ${e.message}`, "bad"); btn.disabled = false; }
   refresh();
 }
@@ -75,24 +109,36 @@ const approvalsGrid = agGrid.createGrid($("approvals"), {
     {field: "reasons", headerName: "Why it needs you", flex: 1.4, minWidth: 180,
       valueFormatter: (p) => (p.value || []).join("; "), tooltipValueGetter: (p) => (p.value || []).join("\n")},
     {field: "status", minWidth: 112, maxWidth: 118, cellRenderer: statusCell},
-    {headerName: "Decision", minWidth: 200, maxWidth: 205, cellRenderer: approvalButtons, sortable: false},
+    {headerName: "Decision", minWidth: 200, maxWidth: 205, cellRenderer: ApprovalButtons, sortable: false,
+     suppressKeyboardEvent: tabThroughControls},
   ],
   ...GRID_BASE, rowData: [], domLayout: "autoHeight",
-  overlayNoRowsTemplate: empty("Nothing waiting for you", "Requests over a cap appear here for a human decision."),
+  overlayNoRowsTemplate: APPROVALS_EMPTY,
   getRowId: (p) => p.data.id, rowClass: "row-pending", suppressColumnVirtualisation: true,
+  onGridSizeChanged: hideWhenNarrow(["id"]),
   rowHeight: 48, autoSizeStrategy: {type: "fitGridWidth"},
   defaultColDef: {resizable: true, sortable: true},
 });
 
 /* ---------- orders ---------- */
-function payCell(p) {
-  if (p.data.status === "PAYER_ACTION_REQUIRED" && p.data.approve_url) {
-    const a = document.createElement("a");
-    a.className = "btn grid-btn paypal"; a.textContent = "Pay with PayPal";
-    a.href = p.data.approve_url; a.target = "_blank"; a.rel = "noopener";
-    return a;
+// Pay button while the buyer still has to approve on PayPal, else the capture id (always as text).
+class PayCell {
+  init(p) { this.gui = document.createElement("span"); this.refresh(p); }
+  getGui() { return this.gui; }
+  refresh(p) {
+    const d = p.data, url = d.status === "PAYER_ACTION_REQUIRED" ? safeUrl(d.approve_url) : null;
+    const cur = this.gui.firstElementChild;
+    if (url) {
+      const a = cur && cur.tagName === "A" ? cur : document.createElement("a");
+      a.className = "btn grid-btn paypal"; a.textContent = "Pay with PayPal";
+      a.href = url; a.target = "_blank"; a.rel = "noopener";
+      a.setAttribute("aria-label", `Pay ${d.id} (${usd(d.amount)}) with PayPal, opens in a new tab`);
+      if (a !== cur) this.gui.replaceChildren(a);
+    } else {
+      this.gui.replaceChildren(document.createTextNode(d.capture_id || ""));
+    }
+    return true;
   }
-  return p.data.capture_id || "";
 }
 const ordersGrid = agGrid.createGrid($("orders"), {
   columnDefs: [
@@ -109,12 +155,13 @@ const ordersGrid = agGrid.createGrid($("orders"), {
     {field: "paypal_order_id", headerName: "PayPal order", width: 178, suppressSizeToFit: true,
       tooltipField: "paypal_order_id"},
     // wide enough for a 17-character capture id (e.g. 8VA9873790040992M) and the Pay button
-    {headerName: "Payment / capture", width: 182, suppressSizeToFit: true, cellRenderer: payCell, sortable: false,
+    {headerName: "Payment / capture", width: 182, suppressSizeToFit: true, cellRenderer: PayCell, sortable: false, suppressKeyboardEvent: tabThroughControls,
       tooltipValueGetter: (p) => p.data && p.data.capture_id ? `Capture ${p.data.capture_id}` : null},
   ],
   ...GRID_BASE, rowData: [], domLayout: "autoHeight",
-  overlayNoRowsTemplate: empty("No orders yet", "Ask the agent above: orders within your caps appear here."),
+  overlayNoRowsTemplate: ORDERS_EMPTY,
   getRowId: (p) => p.data.id,
+  onGridSizeChanged: hideWhenNarrow(["id", "paypal_order_id"]),
   rowClassRules: {"row-await": (p) => p.data && p.data.status === "PAYER_ACTION_REQUIRED",
                   "row-done": (p) => p.data && p.data.status === "COMPLETED",
                   "row-bad": (p) => p.data && ["FAILED", "CAPTURE_FAILED", "NEEDS_RECONCILIATION"].includes(p.data.status)},
@@ -187,6 +234,7 @@ const auditGrid = agGrid.createGrid($("audit"), {
   isExternalFilterPresent: () => $("audit-hide-checks").checked,
   doesExternalFilterPass: (node) => node.data.stage !== "check",
   onRowClicked: (e) => showDecision(e.data.id),
+  onCellKeyDown: (e) => { if (e.event && e.event.key === "Enter" && e.data) showDecision(e.data.id); },
 });
 $("audit-search").addEventListener("input", (e) => auditGrid.setGridOption("quickFilterText", e.target.value));
 $("audit-hide-checks").addEventListener("change", () => auditGrid.onFilterChanged());
@@ -361,7 +409,11 @@ function refreshAudit() {  // newest audit page + the open detail; never overlap
     try {
       auditApply(await api(`/decisions?limit=${AUDIT_PAGE}`), false);
       if (detail.id && !$("audit-detail").hidden) await showDecision(detail.id, {quiet: true});
-    } catch (e) { conn.fail(e); }
+      conn.ok("audit");
+    } catch (e) {
+      conn.fail("audit", e);
+      auditGrid.setGridOption("loading", false);
+    }
   })().finally(() => { auditRefreshing = null; });
   return auditRefreshing;
 }
@@ -376,8 +428,8 @@ function refresh() {  // never overlapping: a request made while one runs schedu
   return refreshing;
 }
 async function loadHealth() {  // header chips; retried by every poll until it answers once
-  const h = await api("/health").catch(() => null);
-  if (h) { health = h; renderMode(); }
+  const h = await api("/health").catch((e) => { conn.fail("health", e); return null; });
+  if (h) { health = h; renderMode(); conn.ok("health"); }
   return h;
 }
 async function doRefresh() {
@@ -385,13 +437,17 @@ async function doRefresh() {
     if (!health) loadHealth();
     if (auditVisible()) refreshAudit();  // the audit log is polled only while its tab is shown
     const [orders, approvals, spend] = await Promise.all([api("/orders"), api("/approvals"), api("/spend")]);
-    conn.ok();
+    conn.ok("core");
     const pendingRows = approvals.filter((a) => a.status === "PENDING");
     ordersGrid.setGridOption("rowData", orders);
     approvalsGrid.setGridOption("rowData", pendingRows);
     fitRows(ordersGrid, "orders", orders.length, 8);
     fitRows(approvalsGrid, "approvals", pendingRows.length, 6);
     for (const g of [ordersGrid, approvalsGrid, spendGrid]) g.setGridOption("loading", false);
+    if (!conn.loadedOnce) {
+      ordersGrid.setGridOption("overlayNoRowsTemplate", ORDERS_EMPTY);
+      approvalsGrid.setGridOption("overlayNoRowsTemplate", APPROVALS_EMPTY);
+    }
     const badge = $("approvals-count");
     badge.textContent = pendingRows.length; badge.hidden = !pendingRows.length;
     spendGrid.setGridOption("rowData", [
@@ -402,12 +458,22 @@ async function doRefresh() {
     ]);
     $("spend-day").textContent = `Day ${spend.day} (policy timezone) · ${spend.currency}`;
     renderKpis(spend, pendingRows.length);
-  } catch (e) { conn.fail(e); }
+  } catch (e) {
+    conn.fail("core", e);
+    if (!conn.loadedOnce) {  // first load failed: show an error instead of an endless "Loading…"
+      for (const g of [ordersGrid, approvalsGrid, spendGrid]) {
+        g.setGridOption("overlayNoRowsTemplate", empty("Could not load", "The server did not answer; retrying every 5 seconds."));
+        g.setGridOption("loading", false);
+      }
+    }
+  }
 }
 
+let asking = false;  // one agent request at a time (Ctrl+Enter could otherwise submit twice)
 $("ask-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const text = $("ask").value.trim(); if (!text) return;
+  const text = $("ask").value.trim(); if (!text || asking) return;
+  asking = true;
   const btn = $("ask-btn"); btn.disabled = true; btn.textContent = "Working…";
   const ans = $("answer"); ans.hidden = false; ans.className = "answer busy";
   ans.replaceChildren(el("span", {class: "spinner", "aria-hidden": "true"}), "The agent is searching the catalog, checking your policy and placing orders…");
@@ -415,16 +481,16 @@ $("ask-form").addEventListener("submit", async (ev) => {
     const r = await api("/agent/request", {method: "POST", headers: {"content-type": "application/json"},
       body: JSON.stringify({request: text})});
     ans.className = "answer";
-    ans.replaceChildren(el("div", {class: "answer-h"}, "Agent's answer"), el("div", {class: "final"}, r.final_text),
-                        el("div", {class: "answer-h"}, "Tool calls (every order went through the policy gate)"),
-                        renderAgentSteps(r.transcript));
+    ans.replaceChildren(...renderAgentAnswer(r));
   } catch (e) { ans.className = "answer err"; ans.replaceChildren(el("strong", {}, "Agent error: "), e.message); }
-  btn.disabled = false; btn.textContent = "Send";
+  finally { asking = false; btn.disabled = false; btn.textContent = "Send"; }
   refresh();
 });
 for (const b of document.querySelectorAll("#examples [data-ask]"))
   b.addEventListener("click", () => { $("ask").value = b.dataset.ask; $("ask").focus(); });
-$("ask").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("ask-form").requestSubmit(); });
+$("ask").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (!asking) $("ask-form").requestSubmit(); }
+});
 
 (async () => {
   await loadHealth();

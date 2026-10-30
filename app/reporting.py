@@ -160,8 +160,9 @@ class ReportingMixin:
         Counted per attempt, i.e. per distinct (request, product) pair, so a dry-run
         check_policy followed by create_order for the same item counts once:
           blocked_today   - attempts with a DENY verdict at any stage
-          escalated_today - attempts that raised an approval request
-          allowed_today   - attempts that created a PayPal order without a human"""
+          escalated_today - attempts that created an approval request (DENIED / NOT_NEEDED replies
+                            to request_approval are not escalations)
+          allowed_today   - attempts that reserved budget for a PayPal order without a human"""
         tz = ZoneInfo(self.policy.timezone)
         d = datetime.fromisoformat(day).date()
         start = datetime.combine(d, time(0), tz)
@@ -172,8 +173,9 @@ class ReportingMixin:
         with self.store.lock:
             run = lambda cond: self.store.conn.execute(q + cond, (lo, hi)).fetchone()[0]  # noqa: E731
             return {"blocked_today": run("verdict='DENY'"),
-                    "escalated_today": run("stage='approval_request'"),
-                    "allowed_today": run("stage='order' AND verdict='ALLOW'")}
+                    "escalated_today": run("stage='approval_request' AND outcome='APPROVAL_REQUESTED' "
+                                           "AND approval_id IS NOT NULL"),
+                    "allowed_today": run("stage='order' AND outcome='RESERVED' AND order_id IS NOT NULL")}
 
     def spend_history(self, days: int = 14) -> dict[str, Any]:
         """Daily spend for the last `days` days (policy timezone, today last), split into

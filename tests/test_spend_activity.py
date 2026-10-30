@@ -32,6 +32,15 @@ def test_counts_attempts_not_rows(service):
     assert (s["blocked_today"], s["escalated_today"], s["allowed_today"]) == (2, 1, 1)
 
 
+def test_refused_or_unneeded_approval_requests_are_not_escalations(service):
+    assert service.request_approval("P-5001", 1, "gift card", request_id="REQ-A")["result"] == "DENIED"
+    assert service.request_approval("P-1001", 1, "cheap cable", request_id="REQ-B")["result"] == "NOT_NEEDED"
+    s = service.spend_summary()
+    assert s["escalated_today"] == 0 and s["blocked_today"] == 1 and s["allowed_today"] == 0
+    assert service.request_approval("P-1003", 1, "keyboard", request_id="REQ-C")["result"] == "APPROVAL_REQUESTED"
+    assert service.spend_summary()["escalated_today"] == 1
+
+
 def test_day_boundary_follows_the_policy_timezone(policy, catalog, clock):
     tz = ZoneInfo("Asia/Taipei")
     svc = BuyerService(replace(policy, timezone="Asia/Taipei"), catalog, MockPayPal(), ":memory:", clock=clock)

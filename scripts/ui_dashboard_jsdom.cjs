@@ -4,7 +4,10 @@
 //   - Approve / Reject open a confirmation dialog first: nothing is POSTed until it is confirmed,
 //     Escape and Cancel close it, and a missing approver token is asked for inside the dialog;
 //   - a confirmed Reject POSTs with the token and the approval leaves the grid;
-//   - a failing poll shows the connection banner, the next good poll hides it.
+//   - a second confirmDialog() settles the first one (no promise left pending);
+//   - a double Ctrl+Enter sends one agent request, not two;
+//   - a failing poll shows the connection banner, the next good poll hides it, and a failure of
+//     one resource is not hidden by another resource's success.
 //
 //   node scripts/ui_dashboard_jsdom.cjs http://127.0.0.1:PORT APPROVER_TOKEN APPROVAL_ID
 const {JSDOM, VirtualConsole} = require("jsdom");
@@ -77,6 +80,25 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   await until(() => d.querySelectorAll("#approvals .ag-center-cols-container .ag-row").length === 0 && card("pending") === "0");
   if (card("pending") !== "0") fail("pending card should drop to 0 after the reject");
 
+  // dialog re-entry: the first promise is settled (false) when a second dialog replaces it
+  const first = w.eval("confirmDialog({title: 'one'})");
+  const second = w.eval("confirmDialog({title: 'two'})");
+  const firstResult = await Promise.race([first, sleep(500).then(() => "pending")]);
+  if (firstResult !== false) fail("first dialog promise should settle false, got " + firstResult);
+  $("modal-confirm").click();
+  if ((await second) !== true || !$("modal").hidden) fail("second dialog should confirm and close");
+  if ([...d.body.children].some((n) => n.inert)) fail("page must not stay inert after the dialog closes");
+
+  // double Ctrl+Enter -> one agent request
+  $("ask").value = "Buy 1 USB-C cable";
+  const ctrlEnter = () => $("ask").dispatchEvent(new w.KeyboardEvent("keydown", {key: "Enter", ctrlKey: true, bubbles: true}));
+  ctrlEnter(); ctrlEnter();
+  await until(() => posts.some((x) => x.url.startsWith("/agent/request")) && !$("ask-btn").disabled, 30000);
+  await sleep(300);
+  const agentPosts = posts.filter((x) => x.url.startsWith("/agent/request")).length;
+  if (agentPosts !== 1) fail(`double Ctrl+Enter sent ${agentPosts} agent requests`);
+  if (!d.querySelector("#answer .outcomes li") || !d.querySelector("#answer details.trace")) fail("answer: outcomes + collapsed trace expected");
+
   // connection banner
   breakOrders = true;
   await w.eval("refresh()");
@@ -84,6 +106,11 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   breakOrders = false;
   await w.eval("refresh()");
   if (!$("conn-banner").hidden) fail("a good poll should hide the banner");
+  w.eval("conn.fail('audit', new Error('boom'))");
+  await w.eval("refresh()");  // core is fine, audit is still down
+  if ($("conn-banner").hidden || !$("conn-detail").textContent.includes("audit")) fail("core success must not hide an audit failure");
+  w.eval("conn.ok('audit')");
+  if (!$("conn-banner").hidden) fail("banner should clear once every resource recovered");
 
   const bad = errors.filter((e) => !/zero width|Could not parse CSS/.test(e));
   if (bad.length) fail("errors: " + bad.join("\n"));
