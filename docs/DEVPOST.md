@@ -95,7 +95,7 @@ tab were added after recording (README: "Use it from any MCP agent" and the Poli
   owner saved first, change history) and a spend-over-time chart).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 404 pytest tests (401 run with Python alone; 1 dashboard-logic test needs node, 1 headless UI
+- **Tests:** 400+ automated pytest tests (414 at the 2026-10-30 release check: 411 run with Python alone; 1 dashboard-logic test needs node, 1 headless UI
   test needs node + jsdom, 1 interop test needs the official MCP SDK): guardrails, payment flow, reservations/expiry, ambiguous PayPal outcomes and
   reconciliation, API, agent loop with a scripted fake LLM, offline mode, thread/barrier concurrency tests
   for budget races, double approvals and cancel-vs-capture, MCP protocol + end-to-end stdio sessions

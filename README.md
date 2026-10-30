@@ -546,7 +546,7 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 - [x] AG Grid **Audit** tab: every guardrail decision with column filters, quick search, risk highlighting, CSV export and a detail panel (quote, rules evaluated, payment timeline)
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
 - [x] Bring your own model: Anthropic Messages or any OpenAI-compatible endpoint (`LLM_PROVIDER`)
-- [x] Demo video: final cut 2:23 with the real Sandbox buyer approval (YouTube link on the Devpost page)
+- [x] Demo video: final cut 2:24 with the real Sandbox buyer approval (YouTube link on the Devpost page)
 - [x] MCP server: the guarded tools for any MCP agent (Claude Desktop, Codex …), remote + embedded offline modes, prompt-injection tests, live Codex run ([`docs/MCP_LIVE_SMOKE.md`](docs/MCP_LIVE_SMOKE.md)) — added after the video was recorded
 - [x] AG Grid **Policy & spend** tab: owner-token protected policy editor with server validation and change history, spend-over-time chart (AG Charts Community) — added after the video was recorded
 - [ ] PayPal webhooks (`CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`) with signature verification

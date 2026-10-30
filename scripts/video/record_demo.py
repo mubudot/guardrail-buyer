@@ -57,7 +57,7 @@ PayPal redirects to <code>/paypal/return</code> → the app captures → order <
 <p><small>Not automated here: the Sandbox buyer password is not available to the recording script.</small></p></div>""",
     "s8_close": """<div class="c"><h1>GuardRail Buyer</h1>
 <p>Claude tool use · PayPal Orders v2 (Sandbox) · FastAPI · AG Grid Community</p>
-<p>Open source (MIT) · 256 tests · <b>AGENT_MODE=offline</b> runs the full flow without an AI key</p>
+<p>Open source (MIT) · 400+ automated tests · <b>AGENT_MODE=offline</b> runs the full flow without an AI key</p>
 <p style="margin-top:28px;font-size:34px;color:#fff"><b>Let agents spend, inside your guardrails.</b></p>
 <p><small>Narration: Piper TTS (voice trained on LibriTTS-R, CC BY 4.0). No music.</small></p></div>""",
 }

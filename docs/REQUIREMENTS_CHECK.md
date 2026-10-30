@@ -30,8 +30,8 @@ Legend: ✅ done · 🟡 partly / needs a decision · ❌ not done yet
 | 11 | Public repo (GitHub/GitLab/Bitbucket) with all source, assets, instructions | ❌ | Repo is local only by design until the user confirms. Needs: create public GitHub repo, push (G4) |
 | 12 | Open-source licence file, detectable in the repo "About" section | 🟡 | `LICENSE` = MIT (GitHub detects it). Check About once pushed |
 | 13 | Identify which AI tools were used | ✅ | README "AI tools used" + `docs/DEVPOST.md`: Claude (runtime agent), Hark (coding assistant), OpenAI Codex CLI (independent reviewer), Piper TTS (narration); offline parser is not AI |
-| 14 | Demo video < 3 min, shows the project working, public on YouTube, link on form | 🟡 | Final cut 2:23 (kept outside the repo) with real Sandbox buyer login → Pay → capture `COMPLETED` footage in scene 7 (run `ORD-F79F379F1E` / capture `14579671MH105231J`, `docs/SANDBOX_E2E.md`); OCR-checked for personal data. Remaining: YouTube upload by the user (G1) |
-| 14b | Video numbers match the repo | ✅ | Closing card says "256 tests" (true when recorded: 255 + 1 jsdom). The final re-check added 13 tests (269) the MCP + Policy tab upgrade 86 more (355), and later rounds bring it to 414 (412 passed + 2 skipped, 2026-10-30 release check), so the video understates the count; nothing on screen is false. No re-record needed |
+| 14 | Demo video < 3 min, shows the project working, public on YouTube, link on form | 🟡 | Final cut 2:24 (kept outside the repo) with real Sandbox buyer login → Pay → capture `COMPLETED` footage in scene 7 (run `ORD-F79F379F1E` / capture `14579671MH105231J`, `docs/SANDBOX_E2E.md`); OCR-checked for personal data. Remaining: YouTube upload by the user (G1) |
+| 14b | Video numbers match the repo | ✅ | Closing card and narration re-rendered 2026-10-30 to say "400+ automated tests" / "more than four hundred automated tests" (suite: 414 = 412 passed + 2 skipped at b5d7e76), wording that stays true as tests are added. Only the closing scene changed; the recorded Sandbox footage is untouched. Final cut 2:24 (143.8 s) |
 | 15 | Video: no third-party trademarks / copyrighted music without permission | ✅ (draft) | No music; Piper narration credited; only PayPal's own Sandbox pages, AG Grid, Claude named |
 | 16 | Testing access free until judging ends; include test credentials / sandbox login details or clear instructions to obtain access | 🟡 | README explains creating a free Sandbox app + personal test account; mock mode needs nothing. Decision on publishing throwaway Sandbox credentials still open (G3) |
 | 17 | English materials | ✅ | All repo docs in English |
@@ -54,7 +54,7 @@ Prize fit: Grand prizes; honorable mentions **Best Use of Agentic Commerce**, **
 
 ## Gaps / next actions
 
-- **G1 Demo video** — done except the upload: the final cut (2:23) includes real scene-7 footage (Sandbox personal account login → Pay → `COMPLETED`). The user uploads it to YouTube (public) and pastes the link.
+- **G1 Demo video** — done except the upload: the final cut (2:24) includes real scene-7 footage (Sandbox personal account login → Pay → `COMPLETED`). The user uploads it to YouTube (public) and pastes the link.
 - **G3 Sandbox credentials for judges** — decision needed: keep "create your own Sandbox app" (current, safe; mock mode works without it) or publish a throwaway Sandbox app's credentials in the Devpost testing instructions only. Never commit secrets.
 - **G4 Public GitHub repo + push** (user confirmation required), then check the licence shows in About.
 - **G5 Devpost text** — `docs/DEVPOST.md`; fill the two placeholders.

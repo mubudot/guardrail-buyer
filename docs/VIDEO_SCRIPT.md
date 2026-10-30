@@ -1,4 +1,4 @@
-# Demo video script — GuardRail Buyer (final cut 2:23, hard limit < 3:00)
+# Demo video script — GuardRail Buyer (final cut 2:24, hard limit < 3:00)
 
 No music (narration only). Voice in the draft: Piper TTS, voice `en_US-libritts_r-medium`
 (trained on LibriTTS-R, CC BY 4.0, credited on the closing card). Only on-screen brands: PayPal's own
@@ -11,7 +11,7 @@ in `scripts/video/scenes.json`; keep it in sync with this file. With `SANDBOX_BU
 recorder also logs in on the real Sandbox checkout, clicks **Pay** and follows the redirect back, so scene 7 is real
 footage; the buyer's email is blurred by `assemble.py`. Without them, scene 7 is a labelled placeholder card.
 
-**Final cut (2026-10-30):** 2:23 (143.3 s), 1280×720, H.264 + AAC, real Sandbox run `ORD-F79F379F1E` →
+**Final cut (2026-10-30):** 2:24 (143.8 s), 1280×720, H.264 + AAC, real Sandbox run `ORD-F79F379F1E` →
 capture `14579671MH105231J` (see `docs/SANDBOX_E2E.md`, second run). Kept outside the repo. Two post steps
 were applied by hand to that take: (1) under heavy CPU load the Playwright screencast lagged the scene clock by up
 to ~3.8 s from scene 6 on, so narration for scenes 6–10 was placed on the measured visual scene starts instead of
@@ -21,6 +21,11 @@ was inserted before the closing card. OCR (tesseract) of every 0.5 s of the fina
 personal email, name, address, client id, token or password; the Sandbox buyer's email is blurred. Visible on
 screen: Sandbox order/capture ids, the PayPal checkout `token=` (= the Sandbox order id), and PayPal's own fake
 Sandbox profile data ("John Doe", PayPal's San Jose address, test funding sources).
+
+**Closing-card update (2026-10-30, later):** the take originally ended with "256 tests". Only scene 10 was
+replaced: the card was re-rendered from `CARDS["s8_close"]` in `record_demo.py` (now "400+ automated tests") and the
+narration re-synthesized from `scenes.json` with the same Piper voice and settings, placed 0.25 s after the card
+starts (as `assemble.py` does). Everything before 2:08.2 is the same footage and audio as the 2:23 cut.
 
 | # | Time (approx.) | On screen | Narration |
 |---|---|---|---|
@@ -33,7 +38,7 @@ Sandbox profile data ("John Doe", PayPal's San Jose address, test funding source
 | 7 | 1:10–1:37 | Real footage: log in with the Sandbox *personal* test account (email blurred, password masked), review $25.98 → **Pay** → redirected to `/paypal/return` → dashboard toast "Payment returned from PayPal … COMPLETED", Orders row `COMPLETED` with capture id `14579671MH105231J`, KPI "Spent today (captured)" = $25.98, reserved $0.00. Captions: "Buyer logs in with the Sandbox personal test account" → "Review the $25.98 Sandbox payment → Pay" → "PayPal redirects to /paypal/return → the app captures → COMPLETED" → "Order COMPLETED with its PayPal capture id · reserved → captured spend". | PayPal redirects back to our app, which captures the payment. The order turns completed, with its PayPal capture ID, and the reserved amount becomes captured spend. |
 | 8 | 1:37–1:50 | Pending approvals row (justification + "amount 89.00 exceeds per-order cap 50.00 USD") → **Approve** with the approver token → toast, new order awaiting the buyer. | Now the human in the loop. The keyboard request shows the agent's justification and exactly which rule it hit. With the approver token, I approve it. The server re-checks the deny rules, then creates a new PayPal order for the buyer. |
 | 9 | 1:50–2:08 | Open the keyboard's Sandbox checkout → click "Cancel and return" (or "Return to Test Store" when the buyer is already logged in) → back in the app: toast "Buyer cancelled … reserved budget released", order `CANCELLED`. | Unpaid orders count against the daily budget, so an agent cannot open lots of small orders to dodge the cap. If the buyer cancels on PayPal, the reservation is released. And a capture attempted before the buyer approves is rejected by PayPal, and changes nothing. |
-| 10 | 2:08–2:23 | Closing card: stack, MIT, 256 tests, `AGENT_MODE=offline`, TTS credit. | GuardRail Buyer is built with Claude tool use, PayPal Orders version two in the Sandbox, FastAPI, and AG Grid. It is open source, with two hundred fifty-six tests, and an offline mode lets judges run the whole flow without an AI key. Let agents spend, inside your guardrails. |
+| 10 | 2:08–2:24 | Closing card: stack, MIT, 400+ automated tests, `AGENT_MODE=offline`, TTS credit. | GuardRail Buyer is built with Claude tool use, PayPal Orders version two in the Sandbox, FastAPI, and AG Grid. It is open source, with more than four hundred automated tests, and an offline mode lets judges run the whole flow without an AI key. Let agents spend, inside your guardrails. |
 
 Times in the table are approximate for the final cut (scene 4's model wait is cut). Total narration ≈ 1:55.
 
