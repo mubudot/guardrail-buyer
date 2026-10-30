@@ -1,4 +1,4 @@
-# Independent review 2 — after `51b02f7`
+# Independent review 2 — after `e302d94`
 
 Reviewed 2026-10-29 UTC. **The original budget and duplicate-approval races are fixed; payment recovery still permits lost accounting.** Read `CODEX_REVIEW_1.md`, `FIX_ROUND_4.md`, application code and all seven test modules. Only this report was added; no source edits, commits, pushes or publishing.
 

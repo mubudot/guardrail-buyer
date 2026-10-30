@@ -1,8 +1,8 @@
 # Fix round 7 — response to CODEX_REVIEW_4
 
-Base `416e2dd` → fix commit `d5a9d4c` (+ this report). Local only: nothing pushed, no remote, no
+Base `ceb6898` → fix commit `c714baa` (+ this report). Local only: nothing pushed, no remote, no
 publication, no PayPal call (live or Sandbox).
-`docs/CODEX_REVIEW_4.md` is committed in `d5a9d4c`.
+`docs/CODEX_REVIEW_4.md` is committed in `c714baa`.
 
 **Tests: 196 → 214** (213 pass + 1 jsdom UI test that is skipped without node/jsdom; 214 pass with
 `GRB_JSDOM_NODE_PATH` set). New: `tests/test_review4_fixes.py` (17), `tests/test_ui_jsdom.py` (1, drives
@@ -33,7 +33,7 @@ that `os._exit(77)`s from a SQLite trace callback (a) right before the backfill 
 ALTERs (verifies no lone ALTER survives), (c) inside v4 — each reopen completes the upgrade with flag 1 and
 $49 still reserved; injected failure rolls back fully; runs-once; 6 concurrent first opens; newer-schema refusal.
 
-Reviewer repro with the **real old code** (`git archive fe14faa` / `9709fba` Stores, then current code), log
+Reviewer repro with the **real old code** (`git archive caed3a3` / `052727e` Stores, then current code), log
 `/tmp/grb7probe/probe.log`:
 ```
 r5+round7    {'schema': 4, 'flag': 1, 'reconcile': 'NEEDS_RECONCILIATION', 'cancel': 'NOT_CANCELLABLE', 'before': '49.00', 'after': '49.00'}
@@ -108,7 +108,7 @@ detail ("failing shared desk peripheral"). Record: `docs/LIVE_CLAUDE_SMOKE.md`, 
   → **214 passed**.
 - Concurrency (`tests/test_concurrency.py` + concurrent-first-open + symlink CLI) **5×** in the working tree and
   5× in the fresh archive: 11 passed each run.
-- Fresh `git archive HEAD` (`d5a9d4c`) in `/tmp/grb-r7b-JYn5`, new Python 3.12.15 venv, pinned install, `pip check`
+- Fresh `git archive HEAD` (`c714baa`) in `/tmp/grb-r7b-JYn5`, new Python 3.12.15 venv, pinned install, `pip check`
   clean. README's first bash block extracted verbatim (`offline-verbatim.sh`), only `PORT=8000` → free port
   **54189** (`offline-freeport.sh`), run in `env -i bash` with a cleanup trap: its suite **213 passed, 1 skipped**;
   server ready; cables reserved $25.98, keyboard needs approval, gift card refused; CLI ran; trap stopped the server.

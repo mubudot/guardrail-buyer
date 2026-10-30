@@ -1,6 +1,6 @@
 # Fix round 4 — response to CODEX_REVIEW_1
 
-Date: 2026-10-30. Baseline `d3b7a09` (68 tests). After this round: **110 tests pass** (`python -m pytest -q`).
+Date: 2026-10-30. Baseline `5133044` (68 tests). After this round: **110 tests pass** (`python -m pytest -q`).
 No remote, push, publish, or live Claude/PayPal calls were made.
 
 ## What changed
@@ -21,7 +21,7 @@ No remote, push, publish, or live Claude/PayPal calls were made.
 ## Verification
 
 - Full suite: `110 passed` (also with `AGENT_MODE=offline PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo DB_PATH=…` exported). Concurrency file run 15× in a row: no flakes.
-- The new concurrency tests fail against the pre-fix code (checked in a temp checkout of `d3b7a09`: 9/9 fail).
+- The new concurrency tests fail against the pre-fix code (checked in a temp checkout of `5133044`: 9/9 fail).
 - Fresh-venv reproduction from a temp copy (`/tmp/fr4`, with a sample `.env` saying `AGENT_MODE=claude` to prove it is ignored), README block executed verbatim except the venv/pip lines which were run first: tests 110 passed; mixed request → cables awaiting payer ($25.98 reserved), keyboard approval, gift card refused; CLI ran offline; extra steps: mock checkout 200, pay → `COMPLETED`, approve without token 401, with token → order $89, repeat approve → same order; "Do not buy any USB-C cables" refused; `/spend` captured 25.98 / reserved 89.00 / total 114.98; `/` has no CDN URL, vendored JS 200; restart on same DB → open keyboard order `MOCK_RESET`, reserved 0.00, captured 25.98 kept.
 
 ## Not done / open

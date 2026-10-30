@@ -22,10 +22,10 @@ from test_review3_fixes import LEGACY_SCHEMA, _legacy_db
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# What round 5 (fe14faa) did to an old DB: add both columns with DEFAULT 0, no backfill.
+# What round 5 (caed3a3) did to an old DB: add both columns with DEFAULT 0, no backfill.
 ROUND5_ALTER = ("ALTER TABLE orders ADD COLUMN op_gen INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE orders ADD COLUMN capture_unknown INTEGER NOT NULL DEFAULT 0")
-# Plus what round 6 (9709fba) added on top (audit tables, meta), still without user_version.
+# Plus what round 6 (052727e) added on top (audit tables, meta), still without user_version.
 ROUND6_DDL = (
     "CREATE TABLE decisions (id TEXT PRIMARY KEY, created_at TEXT, stage TEXT, request_id TEXT, "
     "product_id TEXT, product_name TEXT, merchant TEXT, category TEXT, quantity INTEGER, amount TEXT, "

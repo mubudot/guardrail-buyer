@@ -1,6 +1,6 @@
 # Fix round 5 — response to CODEX_REVIEW_2
 
-Date: 2026-10-30. Baseline `51b02f7` (110 tests). After this round: **148 tests pass** (`python -m pytest -q`).
+Date: 2026-10-30. Baseline `e302d94` (110 tests). After this round: **148 tests pass** (`python -m pytest -q`).
 No remote, push, publish, or live Claude/PayPal calls were made. Payment failures and interleavings are
 exercised with local fake providers (mock / `httpx.MockTransport`), not live Sandbox evidence.
 
@@ -22,7 +22,7 @@ exercised with local fake providers (mock / `httpx.MockTransport`), not live San
 
 - Full suite: **148 passed** (also with `AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo DEMO_MODE=1 DB_PATH=…` exported).
 - Concurrency tests (`tests/test_concurrency.py` + `tests/test_review2_fixes.py`, 29 tests) run **10× in a row: 29 passed every time**.
-- Against the old code (`51b02f7` worktree, new test file with import shims): **10 of the N1–N4 tests fail** for the reviewed reasons (stale read restores `PAYER_ACTION_REQUIRED`; completed replay shown as `PAYER_ACTION_REQUIRED`; second mock worker not refused; second $329 approval `ORDER_PLACED`). The 4 that pass there are coverage tests (stuck reconcile vs live capture, `APPROVED` replay, sandbox without lock, soft caps waived).
+- Against the old code (`e302d94` worktree, new test file with import shims): **10 of the N1–N4 tests fail** for the reviewed reasons (stale read restores `PAYER_ACTION_REQUIRED`; completed replay shown as `PAYER_ACTION_REQUIRED`; second mock worker not refused; second $329 approval `ORDER_PLACED`). The 4 that pass there are coverage tests (stuck reconcile vs live capture, `APPROVED` replay, sandbox without lock, soft caps waived).
 - Fresh temp venv from `git archive` of the fix commit (`/tmp/fr5`, Python 3.12.15, `pip check` clean), with a deliberately conflicting `.env` (`AGENT_MODE=claude`, `PAYPAL_MODE=sandbox`, empty token), README offline block run in an `env -i` bash (venv/pip lines executed first):
   - **Verbatim (`PORT=8000`)**: port 8000 was already occupied in this sandbox (a leftover fix-round-4 repro server from `/tmp/fr4`, not started this round and left running). Tests 148 passed; uvicorn logged `address already in use`; the loop printed `SERVER NOT READY …` and **no request was sent to the foreign server**; the CLI ran offline.
   - **Only the `PORT` line changed to a free port (34477)**: 148 passed; `server ready`; mixed request → cables awaiting payer ($25.98 reserved), keyboard approval, gift card refused; CLI offline. Extra checks: `/health` shows `instance`, `approver_mode: token`, `agent_rate_limit: 20/60s`; unsigned and forged GET cancel → 403; mock checkout 200 with a signed cancel link; pay → `COMPLETED` + capture id; approve without token 401, with token → $89 order, repeat → same order (`replayed`); the three review B8 phrases and "Do not buy any USB-C cables" → `offline_refused`; `/spend` captured 25.98 / reserved 89.00 / total 114.98; vendored JS 200, no external URLs in `/`; **second mock server on the same DB → exits 1 with the single-process message, first server still serving**; after stopping it, restart on the same DB → keyboard order `MOCK_RESET`, reserved 0.00, captured 25.98 kept. All servers this round started were stopped.

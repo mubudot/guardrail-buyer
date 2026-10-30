@@ -1,6 +1,6 @@
 # Independent review — GuardRail Buyer
 
-Reviewed 2026-10-29 UTC at `d3b7a09`. **Good demo foundation; the “impossible to bypass” claim is not supported.** Sequential policy checks are sound, but concurrency and payment reconciliation undermine the central safety promise. P1 = fix before exposing a shared demo; P2 = correctness/repro gap. Source files were not edited; nothing was committed, pushed or published.
+Reviewed 2026-10-29 UTC at `5133044`. **Good demo foundation; the “impossible to bypass” claim is not supported.** Sequential policy checks are sound, but concurrency and payment reconciliation undermine the central safety promise. P1 = fix before exposing a shared demo; P2 = correctness/repro gap. Source files were not edited; nothing was committed, pushed or published.
 
 ## Verification performed
 

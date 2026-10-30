@@ -6,7 +6,7 @@ in `docs/CODEX_REVIEW_1..4.md`, `docs/CODEX_REVIEW_UI.md` and `docs/FIX_ROUND_4.
 ## Round 5 — 2026-10-30 (Asia/Taipei), cross-check before release
 
 Reviewers: **Hark** (judge-style reproduction from a fresh clone, rules check, privacy scan) and
-**OpenAI Codex CLI** (independent code review + two re-reviews). Baseline commit `8e16118`.
+**OpenAI Codex CLI** (independent code review + two re-reviews). Baseline commit `c2d5849`.
 
 ### A. Hark: judge-style reproduction (fresh `git clone` into a temp dir, README only, no secrets)
 
@@ -98,7 +98,7 @@ publishing Sandbox credentials for judges (see `docs/REQUIREMENTS_CHECK.md` G1/G
 
 ## Final re-check round (2026-10-30, ~09:00–10:00 Asia/Taipei)
 
-Rules and overview re-read (Devpost rules + overview): unchanged. Fresh clone of `76621dd`, README offline block
+Rules and overview re-read (Devpost rules + overview): unchanged. Fresh clone of `56465f2`, README offline block
 verbatim in a new venv: `255 passed, 1 skipped`, server ready, mixed request → cables order $25.98 / keyboard
 approval / gift card refused, spend `reserved 25.98`, CLI run OK. After this round: `268 passed, 1 skipped`.
 

@@ -1,6 +1,6 @@
 # Live Claude smoke test (AI mode, mock PayPal)
 
-- **Date:** 2026-10-30 04:24 Asia/Taipei (2026-10-29 20:24 UTC), fix round 7 working tree (on top of `416e2dd`).
+- **Date:** 2026-10-30 04:24 Asia/Taipei (2026-10-29 20:24 UTC), fix round 7 working tree (on top of `ceb6898`).
 - **Model:** `claude-sonnet-5-5` via a Messages-API-compatible gateway (`ANTHROPIC_BASE_URL` set to that gateway;
   auth injected on the wire by the sandbox gateway, so `ANTHROPIC_API_KEY` was left unset; no key or token is in
   this repo or in the transcript).

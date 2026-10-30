@@ -17,7 +17,7 @@ from app.paypal_client import MockPayPal
 from app.service import BuyerService, Store
 
 # ---- 1. legacy DB upgrade: capture_unknown backfill --------------------------------
-# Exact schema written by 51b02f7 (before op_gen / capture_unknown existed).
+# Exact schema written by e302d94 (before op_gen / capture_unknown existed).
 LEGACY_SCHEMA = """
 CREATE TABLE orders (
     id TEXT PRIMARY KEY, product_id TEXT, product_name TEXT, merchant TEXT,

@@ -1,13 +1,13 @@
-# Independent review 4 — `9709fba` / `416e2dd`
+# Independent review 4 — `052727e` / `ceb6898`
 
-Reviewed 2026-10-29 UTC, HEAD `416e2dd`, after reading `CODEX_REVIEW_3.md` and `FIX_ROUND_6.md`. **No P1 found. Two P2 issues remain:** incomplete legacy migration recovery and mock ownership through a DB symlink. The ordinary regression paths pass; the fixes are not complete under the reproductions below. No source modification, commit, push or publication; only this report was added.
+Reviewed 2026-10-29 UTC, HEAD `ceb6898`, after reading `CODEX_REVIEW_3.md` and `FIX_ROUND_6.md`. **No P1 found. Two P2 issues remain:** incomplete legacy migration recovery and mock ownership through a DB symlink. The ordinary regression paths pass; the fixes are not complete under the reproductions below. No source modification, commit, push or publication; only this report was added.
 
 ## Verification
 
 - Fresh `git archive HEAD`, new Python **3.12.15** venv and pinned install in `/tmp/grb-review4-33z4prym`; `pip check` clean. Full suite: **196 passed**, 4.80s, one Starlette/AnyIO deprecation warning.
 - README's first bash block executed in a fresh `env -i` bash from that archive, changing only `PORT=8000` to **54931**, with an outer cleanup trap/readiness assertion. Its own suite: **196 passed**, 5.86s. Instance readiness succeeded; cables reserved **$25.98**, keyboard needed approval, gift card was denied, CLI succeeded. Port 8000 was not used. Servers started for README/UI checks were killed and waited for; final process inspection found none remaining.
 - `node --check app/static/app.js` passes. Repository smoke script with **real vendored AG Grid + jsdom** passes: eight seeded audit rows, risk classes, floating filters, quick search, CSV, row detail and populated operations grids. Extra probes cover hostile text, response ordering and stale detail. For the hostile-text probe, columns were reduced to the existing plain merchant/justification fields to make them visible in jsdom's zero-width layout.
-- Reproduction artifacts/logs are in that temp directory: `offline-freeport.sh/.log`, `full-suite.log`, `probes.py/.log`, `prior_upgrade.py` / `prior-upgrade.log`, `alias_probe.py` / `alias-probe.log`, `run-ui.sh`, `ui_extra.cjs`, `ui-smoke.log`, `ui-extra.log`. Python probes run with the archived `.venv` from that directory; their DB files must be removed before rerunning. `round5/` is a genuine `fe14faa` archive used in the upgrade probe.
+- Reproduction artifacts/logs are in that temp directory: `offline-freeport.sh/.log`, `full-suite.log`, `probes.py/.log`, `prior_upgrade.py` / `prior-upgrade.log`, `alias_probe.py` / `alias-probe.log`, `run-ui.sh`, `ui_extra.cjs`, `ui-smoke.log`, `ui-extra.log`. Python probes run with the archived `.venv` from that directory; their DB files must be removed before rerunning. `round5/` is a genuine `caed3a3` archive used in the upgrade probe.
 - Local fakes only; no live Claude/Sandbox payment or real-browser layout/visual verification.
 
 ## Four residual fixes
@@ -22,7 +22,7 @@ Reviewed 2026-10-29 UTC, HEAD `416e2dd`, after reading `CODEX_REVIEW_3.md` and `
 ## New/residual findings
 
 1. **N1 — P2: backfill is neither restart-safe nor sufficient for previously upgraded DBs** (`app/service.py:117–129`). Two independent reproductions:
-   - Build the exact legacy schema with an uncertain $49 order; open it once with `fe14faa`'s `Store`, then with current code. The column already exists with flag **0**, so round 6 never backfills it.
+   - Build the exact legacy schema with an uncertain $49 order; open it once with `caed3a3`'s `Store`, then with current code. The column already exists with flag **0**, so round 6 never backfills it.
    - On a direct upgrade, terminate the child process immediately before the backfill UPDATE (SQLite trace callback, exit 77). The preceding ALTER is already committed in autocommit mode. Reopening sees the column and skips repair.
    Both yield **flag 0 → reconcile to `PAYER_ACTION_REQUIRED` → cancel `CANCELLED` → spend $49.00 to $0.00** when the provider reports awaiting buyer. This reproduces the uncertainty invariant violation, not a proven live captured-payment loss. Use an atomic, versioned migration/backfill with a durable completion marker and explicitly repair DBs already migrated by round 5; add both upgrade regressions.
 

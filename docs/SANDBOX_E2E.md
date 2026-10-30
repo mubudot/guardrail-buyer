@@ -1,6 +1,6 @@
 # Real PayPal Sandbox end-to-end run: agent → buyer approval → capture
 
-- **Date:** 2026-10-30, 04:45–04:50 Asia/Taipei (2026-10-29 20:45–20:50 UTC), code at `734cf34`.
+- **Date:** 2026-10-30, 04:45–04:50 Asia/Taipei (2026-10-29 20:45–20:50 UTC), code at `d08f907`.
 - **Result:** the order was created by the real Claude agent, a Sandbox **personal** test buyer logged in on
   `www.sandbox.paypal.com` and clicked **Pay**, PayPal redirected to the app's `/paypal/return`, and the app
   captured the payment. App and PayPal both report **`COMPLETED`**. It worked on the first attempt, with no retries and no manual capture call.
