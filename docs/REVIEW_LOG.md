@@ -133,3 +133,28 @@ and all counts pass. One F07 edge case: an object-valued `error.message` was `st
 secret) before the secret check. Fixed: non-string `error.type` / `error.message` are dropped (+1 test covering
 object, list, number, null and boolean values). Not sent to Codex a third time (loop limit); verified by the
 test suite (`268 passed, 1 skipped`) and a manual probe.
+
+## Upgrade round: MCP server + Policy & spend tab (2026-10-30)
+
+Codex (CLI 0.165.0) reviewed the upgrade diff with live probes. Round 1 ran the full suite and ~40 probes but
+stopped on a model-capacity error before writing its summary, so the findings were taken from its probe
+output (`work/` report, not committed):
+
+| ID | Sev | Finding | Fix |
+|---|---|---|---|
+| M1 | high | `sync_policy` read the DB override outside the store lock: a slow reader could install an older policy after a newer one (probe: persisted per-order cap 1.00, decision used 100.00). | Read + adopt under the store lock every policy write holds (+ regression test: the writer waits, the next decision uses 1.00). |
+| M2 | medium | External split-order aggregation keyed on the client's `session_id`; rotating it split 2 × $329 past a $500 hard max (with loose caps). | All external tool orders are grouped server-side per policy day (`ext-<day>`); `session_id` is only validated (+2 tests). |
+| M3 | medium | Concurrent owner edits: a stale full-list save undid another owner's change. | `GET /policy` returns `revision`; `PUT /policy` honours `If-Match` → 409; the dashboard sends it (+1 test). |
+| M4 | medium | Dashboard: a poll returning during an edit discarded it. | Re-check dirty / open editor after the await, reload only on a new revision (+1 node test). |
+| M5 | low | `max_price` 1e30 / 10**400 crashed the call. | Bounded at 1,000,000, big ints handled (+3 cases). |
+| M6 | low | `tools/call` accepted before `initialize`. | Kept lenient (clients SHOULD initialize first; all tested clients do). |
+
+Codex re-verify: M1, M2, M4, M5 fixed; M3 fixed for ordinary stale saves. Two follow-ups, both fixed:
+
+| ID | Finding | Fix |
+|---|---|---|
+| M3b | `GET /policy` read the fields and the revision separately, so a write in between paired old fields with the new revision. | One locked snapshot (`policy_snapshot`) (+1 test). |
+| M2b | An external approval requested before midnight and executed after it aggregated with the old day's group: $658 booked today against the $500 hard max. | The external group is re-resolved to the booking day inside the decision transaction (place, request, approve) (+1 test, fails on the parent code). |
+
+Not sent to Codex a third time (loop limit); verified by the suite (`353 passed, 2 skipped`) and the probes
+turned into regression tests.

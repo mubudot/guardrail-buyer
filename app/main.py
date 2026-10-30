@@ -190,8 +190,8 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
 
     @app.get("/policy")
     def get_policy():
-        return {**svc.sync_policy().to_dict(), "spent_today": str(svc.spent_today()), "day": svc._today(),
-                "revision": svc.policy_revision()}
+        pol, revision = svc.policy_snapshot()  # fields and revision from one snapshot
+        return {**pol, "spent_today": str(svc.spent_today()), "day": svc._today(), "revision": revision}
 
     @app.put("/policy", dependencies=[Depends(require_owner)])
     def put_policy(body: dict, if_match: str | None = Header(default=None)):

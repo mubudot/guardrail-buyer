@@ -90,10 +90,11 @@ tab were added after recording (README: "Use it from any MCP agent", repro step 
   decision: column filters, quick search, risk highlighting, CSV export, and a detail panel with the
   quote, every rule evaluated and the payment's status timeline; a **Policy & spend** tab with editable
   policy grids (`agTextCellEditor` / `agSelectCellEditor`, dirty-cell highlighting, owner-token save to
-  `PUT /policy` with server-side validation and `If-Match` revision check, change history) and a spend-over-time chart).
+  `PUT /policy` with server-side validation and an `If-Match` revision check that answers 409 when another
+  owner saved first, change history) and a spend-over-time chart).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 353 pytest tests (350 run with Python alone; 1 dashboard-logic test needs node, 1 headless UI
+- **Tests:** 355 pytest tests (352 run with Python alone; 1 dashboard-logic test needs node, 1 headless UI
   test needs node + jsdom, 1 interop test needs the official MCP SDK): guardrails, payment flow, reservations/expiry, ambiguous PayPal outcomes and
   reconciliation, API, agent loop with a scripted fake LLM, offline mode, thread/barrier concurrency tests
   for budget races, double approvals and cancel-vs-capture, MCP protocol + end-to-end stdio sessions
@@ -142,7 +143,7 @@ fails closed when unset, a signed cancel callback and a simple per-IP agent rate
 per-requester identity or ownership, so don't expose it publicly); catalog merchants are labels and all
 payments go to the single Sandbox merchant of the configured app; spend counts on the day it was reserved;
 policy changes don't revoke orders already created; split-order aggregation covers only the same item
-from the same merchant within one request; mock PayPal state is in memory (one mock server per database, enforced by a lock file); the MCP/`/tools`
+from the same merchant (within one built-in agent request, or one day for external MCP agents); mock PayPal state is in memory (one mock server per database, enforced by a lock file); the MCP/`/tools`
 surface has the same local-demo scope (no per-client auth; split-order aggregation per SKU, merchant and
 day); policy edits use one owner token. Details in the README.
 
@@ -194,7 +195,7 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 351 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
+python -m pytest -q                      # 353 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card

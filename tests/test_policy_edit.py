@@ -212,3 +212,33 @@ def test_slow_policy_reader_cannot_install_an_older_policy(policy, catalog):
         w.join(5)
     assert s.place_order("P-1003", 1)["result"] == "NEEDS_APPROVAL"  # 89 > the newest cap 1.00
     assert str(s.policy.per_order_cap) == "1.00"
+
+
+def test_get_policy_fields_and_revision_are_one_snapshot(service):
+    """Regression (Codex re-verify P2): the revision returned by GET /policy is the revision of
+    exactly the fields returned with it."""
+    import hashlib
+    import json as _json
+    c = client(service)
+    c.put("/policy", json={"daily_cap": "175"}, headers={"X-Owner-Token": "appr"})
+    g = c.get("/policy").json()
+    fields = {k: g[k] for k in ("currency", "per_order_cap", "daily_cap", "hard_max_per_order",
+                                "allowed_categories", "allowed_merchants", "blocked_merchants", "timezone")}
+    assert g["revision"] == hashlib.sha256(_json.dumps(fields, sort_keys=True).encode()).hexdigest()[:16]
+    assert service.policy_snapshot() == (fields, g["revision"])
+
+
+def test_external_approval_executed_after_midnight_counts_with_that_days_orders(service, clock):
+    """Regression (Codex re-verify P1): an approval an external agent requested before midnight
+    is aggregated with the orders of the day it is executed (and booked) on."""
+    tools = GuardedTools(service)
+    clock.now = clock.now.replace(hour=23, minute=58)
+    aid = tools.call("request_approval", {"product_id": "P-1004", "quantity": 1,
+                                          "justification": "monitor"})["result"]["approval_id"]
+    service.update_policy({"per_order_cap": "400", "daily_cap": "1000"})  # owner loosens the soft caps
+    clock.now += timedelta(minutes=5)  # next policy day
+    r = tools.call("create_order", {"product_id": "P-1004", "quantity": 1})["result"]
+    assert r["result"] == "ORDER_PLACED" and r["order"]["amount"] == "329.00"
+    out = service.approve(aid)  # 329 + 329 = 658 > hard max 500 for the same SKU today
+    assert out["result"] == "DENIED"
+    assert service.spent_today() == 329

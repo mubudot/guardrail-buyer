@@ -365,6 +365,15 @@ class BuyerService:
                 f"AND status IN ({qs})", [request_id, product_id, merchant, *COUNTED_STATUSES]).fetchall()
         return money(sum((money(r[0]) for r in rows), Decimal("0")))
 
+    def _group(self, request_id: str | None) -> str | None:
+        """External agents' orders are grouped per policy day (`ext-<day>`, see GuardedTools).
+        Re-resolve the day at decision time, inside the caller's transaction, so an approval
+        requested before midnight and executed after it (or a call that crosses midnight) is
+        aggregated with the orders of the day its reservation is booked on."""
+        if isinstance(request_id, str) and request_id.startswith("ext-"):
+            return f"ext-{self._today()}"
+        return request_id
+
     def _evaluate(self, p: dict[str, Any], req: OrderRequest, request_id: str | None) -> Decision:
         return evaluate(self.policy, req, self.spent_today(),
                         self._related_prior(request_id, p["id"], p["merchant"]))
@@ -372,6 +381,7 @@ class BuyerService:
     # ---- read-only check ----------------------------------------------
     def check(self, product_id: str, quantity: int = 1, request_id: str | None = None) -> dict[str, Any]:
         self.sync_policy()
+        request_id = self._group(request_id)
         p, req = self._line(product_id, quantity)
         spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
         d = evaluate(self.policy, req, spent, prior)
@@ -1011,6 +1021,11 @@ class BuyerService:
                 self._policy_raw = raw
             return self.policy
 
+    def policy_snapshot(self) -> tuple[dict[str, Any], str]:
+        """The policy in force and its revision, read together (one consistent snapshot)."""
+        with self.store.lock:
+            return self.sync_policy().to_dict(), self.policy_revision()
+
     def policy_revision(self) -> str:
         """Opaque id of the policy in force (changes with every owner edit), for
         optimistic concurrency: PUT /policy with a stale base_revision is refused."""
@@ -1138,6 +1153,7 @@ class BuyerService:
         p, req = self._line(product_id, quantity)
         with self.store.tx():  # check + reserve atomically, before any PayPal I/O (B1)
             self.sync_policy()
+            request_id = self._group(request_id)
             spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
             d = evaluate(self.policy, req, spent, prior)
             rules = explain_rules(self.policy, req, spent, prior)
@@ -1156,6 +1172,7 @@ class BuyerService:
     def request_approval(self, product_id: str, quantity: int, justification: str,
                          request_id: str | None = None) -> dict[str, Any]:
         self.sync_policy()
+        request_id = self._group(request_id)
         p, req = self._line(product_id, quantity)
         spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
         d = evaluate(self.policy, req, spent, prior)
@@ -1211,7 +1228,8 @@ class BuyerService:
             # SKU/merchant in the same agent request may have executed meanwhile (N4):
             # recheck the hard rules (incl. the aggregate hard maximum) inside this
             # transaction. Human approval waives only the soft caps.
-            prior = self._related_prior(a.get("request_id"), p["id"], p["merchant"])
+            group = self._group(a.get("request_id"))
+            prior = self._related_prior(group, p["id"], p["merchant"])
             d = hard_rules_only(self.policy, req, prior)
             spent = self.spent_today()
             rules = explain_rules(self.policy, req, spent, prior, soft_waived=True)
@@ -1219,17 +1237,17 @@ class BuyerService:
                 c.execute("UPDATE approvals SET status='DENIED_BY_POLICY', decided_at=? WHERE id=? AND status='PENDING'",
                           (self._ts(), approval_id))
                 self._log_decision("approval_execute", p, int(a["quantity"]), req, d, "DENIED", rules, spent,
-                                   a.get("request_id"), approval_id=approval_id)
+                                   group, approval_id=approval_id)
                 return {"result": "DENIED", **d.to_dict()}
             claim = c.execute("UPDATE approvals SET status='EXECUTING', decided_at=? WHERE id=? AND status='PENDING'",
                               (self._ts(), approval_id))
             if claim.rowcount != 1:  # pragma: no cover - impossible inside the write transaction
                 raise ValueError("approval was claimed concurrently")
             oid = self._reserve(p, req, int(a["quantity"]), d, approval_id=approval_id,
-                                request_id=a.get("request_id"))
+                                request_id=group)
             c.execute("UPDATE approvals SET order_id=? WHERE id=?", (oid, approval_id))
             self._log_decision("approval_execute", p, int(a["quantity"]), req, d, "RESERVED", rules, spent,
-                               a.get("request_id"), order_id=oid, approval_id=approval_id)
+                               group, order_id=oid, approval_id=approval_id)
         order = self._create_at_provider(oid)
         with self.store.tx() as c:
             c.execute("UPDATE approvals SET status='APPROVED' WHERE id=? AND status='EXECUTING'", (approval_id,))

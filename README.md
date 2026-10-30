@@ -157,7 +157,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 351 passed, 2 skipped (jsdom UI test, optional MCP SDK interop; 3 skipped without node)
+python -m pytest -q                                     # -> 353 passed, 2 skipped (jsdom UI test, optional MCP SDK interop; 3 skipped without node)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -238,7 +238,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `351 passed, 2 skipped` (no network, no API key needed; the skips need jsdom / the official `mcp` SDK; without `node` one more test is skipped).
+1. **Run the tests** — `python -m pytest -q` → see `353 passed, 2 skipped` (no network, no API key needed; the skips need jsdom / the official `mcp` SDK; without `node` one more test is skipped).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -545,9 +545,10 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
 - **Policy changes grandfather existing orders.** Orders already created (awaiting the buyer) are still
   captured after a policy change; only pending *approvals* are re-checked against the current deny rules
   when approved. Cancel open orders by hand (`POST /orders/{id}/cancel`) after tightening the policy.
-- **Split-order aggregation is narrow.** Only orders for the same SKU from the same merchant within one
-  agent request are aggregated. Different SKUs, or separate requests, are judged per order; the daily cap is
-  the backstop.
+- **Split-order aggregation is narrow.** Only orders for the same SKU from the same merchant are aggregated:
+  within one `/agent/request` run for the built-in agent, and within one policy day for external agents
+  (MCP / `/tools`). Different SKUs, or separate `/agent/request` runs, are judged per order; the daily cap
+  is the backstop.
 - **Reconciliation is on demand.** An ambiguous capture is checked once right away; every ambiguous
   outcome can be re-checked via `POST /orders/{id}/reconcile` (or a capture/return retry); there is no webhook or background job yet. An
   order whose capture outcome was ambiguous stays reserved (never cancellable or expirable) until PayPal
