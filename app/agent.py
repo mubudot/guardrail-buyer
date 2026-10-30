@@ -215,10 +215,13 @@ def _safe_error_detail(r: httpx.Response, key: str | None) -> str:
     otherwise key-like tokens are masked."""
     try:
         err = r.json().get("error") or {}
-        etype, msg = str(err.get("type") or ""), str(err.get("message") or "")
+        etype, msg = err.get("type"), err.get("message")
     except (ValueError, AttributeError):
         return "non-JSON error body (not shown)"
-    etype = etype if etype in _ERROR_TYPES else "unknown_error"
+    # Only plain strings are shown: str() of an object/list would re-encode (escape) a secret so the
+    # substring check below could miss it.
+    msg = msg if isinstance(msg, str) else ""
+    etype = etype if isinstance(etype, str) and etype in _ERROR_TYPES else "unknown_error"
     secrets_ = [v for v in (key, os.environ.get("PAYPAL_CLIENT_SECRET"), os.environ.get("APPROVER_TOKEN"),
                             os.environ.get("STATE_SECRET"), os.environ.get("PAYPAL_CLIENT_ID")) if v]
     if any(v in msg for v in secrets_):

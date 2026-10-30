@@ -129,3 +129,14 @@ def test_short_configured_secret_in_message_withholds_it(monkeypatch):
     body = {"error": {"type": "invalid_request_error", "message": "token q7 rejected"}}
     msg = _raise_with(monkeypatch, httpx.Response(400, json=body))
     assert "q7" not in msg and "withheld" in msg
+
+
+def test_non_string_error_fields_are_never_shown(monkeypatch):
+    """Codex re-verify 2: an object-valued message was str()-ed (escaping the backslash in a secret) before
+    the secret check, so a secret like p\\q leaked in its repr. Non-strings are now dropped."""
+    monkeypatch.setenv("STATE_SECRET", "p\\q")
+    for etype in ({"t": "p\\q"}, ["api_error"], 5, None):
+        for message in ({"echo": "p\\q"}, ["p\\q"], 12, None, True):
+            body = {"error": {"type": etype, "message": message}}
+            msg = _raise_with(monkeypatch, httpx.Response(400, json=body))
+            assert msg == "Messages API HTTP 400: unknown_error", body

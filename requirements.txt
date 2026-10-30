@@ -1,4 +1,4 @@
-# Exact versions tested together (Python 3.12, 2026-10-30): the full suite passes with this set (268 tests at the final re-check: 267 passed + 1 jsdom UI test skipped without jsdom).
+# Exact versions tested together (Python 3.12, 2026-10-30): the full suite passes with this set (269 tests at the final re-check: 268 passed + 1 jsdom UI test skipped without jsdom).
 # Direct dependencies
 fastapi==0.162.0
 uvicorn==0.41.0
