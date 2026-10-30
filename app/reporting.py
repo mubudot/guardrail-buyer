@@ -3,9 +3,10 @@ detail with the payment timeline) and spend summaries against the caps. Mixed in
 BuyerService (service.py); nothing here moves money."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .guardrails import money
 from .store import RESERVED_STATUSES
@@ -152,7 +153,27 @@ class ReportingMixin:
                 "daily_cap": str(cap), "remaining": str(money(max(cap - total, Decimal("0")))),
                 "per_order_cap": str(self.policy.per_order_cap),
                 "hard_max_per_order": str(self.policy.hard_max_per_order),
-                "needs_reconciliation": unconfirmed}
+                "needs_reconciliation": unconfirmed, **self.guardrail_activity(day)}
+
+    def guardrail_activity(self, day: str) -> dict[str, int]:
+        """How the guardrails acted on `day` (policy timezone), for the dashboard's summary cards.
+        Counted per attempt, i.e. per distinct (request, product) pair, so a dry-run
+        check_policy followed by create_order for the same item counts once:
+          blocked_today   - attempts with a DENY verdict at any stage
+          escalated_today - attempts that raised an approval request
+          allowed_today   - attempts that created a PayPal order without a human"""
+        tz = ZoneInfo(self.policy.timezone)
+        d = datetime.fromisoformat(day).date()
+        start = datetime.combine(d, time(0), tz)
+        lo = self._ts(start)
+        hi = self._ts(datetime.combine(d + timedelta(days=1), time(0), tz))
+        key = "COALESCE(request_id, id) || '|' || product_id"
+        q = (f"SELECT COUNT(DISTINCT {key}) FROM decisions WHERE created_at >= ? AND created_at < ? AND ")
+        with self.store.lock:
+            run = lambda cond: self.store.conn.execute(q + cond, (lo, hi)).fetchone()[0]  # noqa: E731
+            return {"blocked_today": run("verdict='DENY'"),
+                    "escalated_today": run("stage='approval_request'"),
+                    "allowed_today": run("stage='order' AND verdict='ALLOW'")}
 
     def spend_history(self, days: int = 14) -> dict[str, Any]:
         """Daily spend for the last `days` days (policy timezone, today last), split into

@@ -3,69 +3,97 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GuardRail Buyer</title>
+  <title>GuardRail Buyer · PayPal spend guardrails for AI agents</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/vendor/ag-grid-community-32.3.3/ag-grid.min.css">
   <link rel="stylesheet" href="/static/vendor/ag-grid-community-32.3.3/ag-theme-quartz.min.css">
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/vendor/ag-grid-community-32.3.3/ag-grid-community.min.js"></script>
 </head>
 <body>
-<header>
-  <div class="title">
-    <h1>GuardRail Buyer</h1>
-    <span class="sub">AI purchasing agent · PayPal spend guardrails</span>
+<a class="skip" href="#main">Skip to the dashboard</a>
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+      <path d="M16 2.5 4.5 7v8.2c0 7 4.9 12.6 11.5 14.3 6.6-1.7 11.5-7.3 11.5-14.3V7L16 2.5Z" fill="#0070e0"/>
+      <path d="M16 2.5V29.5c6.6-1.7 11.5-7.3 11.5-14.3V7L16 2.5Z" fill="#009cde"/>
+      <path d="m10.5 16.2 3.8 3.8 7.4-7.6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <h1>GuardRail Buyer</h1>
+      <p class="sub">PayPal spend guardrails for AI agents</p>
+    </div>
   </div>
   <div class="status">
-    <span id="mode" class="pill">…</span>
-    <span id="approver-mode" class="pill" hidden></span>
-    <label class="token">Approver token
+    <span id="mode" class="chip" title="PayPal environment">PayPal …</span>
+    <span id="agent-mode" class="chip" hidden></span>
+    <span id="approver-mode" class="chip" hidden></span>
+    <label class="token"><span>Approver token</span>
       <input id="token" type="password" placeholder="APPROVER_TOKEN" autocomplete="off">
     </label>
   </div>
 </header>
 
-<main>
-  <section class="ask card">
-    <h2>Ask the agent</h2>
+<div id="conn-banner" class="banner" role="alert" hidden>
+  <strong>Can't reach the GuardRail Buyer server.</strong>
+  <span>Showing the last data loaded; retrying every 5 seconds.</span>
+  <span id="conn-detail" class="hint"></span>
+</div>
+
+<main id="main">
+  <section class="ask card" aria-labelledby="ask-title">
+    <div class="row">
+      <h2 id="ask-title">Ask the agent</h2>
+      <span class="hint">It searches the catalog, checks your policy, then orders through the server, never PayPal directly</span>
+    </div>
     <form id="ask-form">
+      <label class="sr-only" for="ask">Purchase request</label>
       <textarea id="ask" rows="2" maxlength="2000"
         placeholder="e.g. Buy 2 USB-C cables and a mechanical keyboard for the new hire"></textarea>
-      <button id="ask-btn" class="btn primary" type="submit">Send</button>
+      <button id="ask-btn" class="btn primary lg" type="submit">Send</button>
     </form>
-    <div id="answer" class="answer" hidden></div>
+    <div class="examples" id="examples" aria-label="Example requests">
+      <span class="hint">Try:</span>
+      <button type="button" class="chip-btn" data-ask="Buy 2 USB-C charging cables and a mechanical keyboard for our new hire">Cables + keyboard</button>
+      <button type="button" class="chip-btn" data-ask="Order 3 bags of coffee beans and 2 snack boxes for the office">Office snacks</button>
+      <button type="button" class="chip-btn" data-ask="Buy a $100 gift card as a welcome present">Gift card (blocked)</button>
+      <span class="hint kbd-hint"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to send</span>
+    </div>
+    <div id="answer" class="answer" aria-live="polite" hidden></div>
   </section>
 
-  <section class="kpis" id="kpis"></section>
+  <section class="kpis" id="kpis" aria-label="Today at a glance">
+    <div class="kpi skeleton"></div><div class="kpi skeleton"></div><div class="kpi skeleton"></div><div class="kpi skeleton"></div>
+  </section>
 
-  <nav class="tabs" role="tablist">
-    <button class="tab active" role="tab" id="tab-ops" data-view="view-ops" aria-selected="true">Operations</button>
-    <button class="tab" role="tab" id="tab-audit" data-view="view-audit" aria-selected="false">Audit <span id="audit-count" class="count"></span></button>
-    <button class="tab" role="tab" id="tab-policy" data-view="view-policy" aria-selected="false">Policy &amp; spend</button>
+  <nav class="tabs" role="tablist" aria-label="Dashboard views">
+    <button class="tab active" role="tab" id="tab-ops" data-view="view-ops" aria-selected="true" aria-controls="view-ops">Operations</button>
+    <button class="tab" role="tab" id="tab-audit" data-view="view-audit" aria-selected="false" aria-controls="view-audit" tabindex="-1">Audit <span id="audit-count" class="count"></span></button>
+    <button class="tab" role="tab" id="tab-policy" data-view="view-policy" aria-selected="false" aria-controls="view-policy" tabindex="-1">Policy &amp; spend</button>
   </nav>
 
-  <div id="view-ops" class="view">
-
-  <section class="card">
-    <div class="row"><h2>Pending approvals</h2><span class="hint">Over a cap → a human decides</span></div>
-    <div id="approvals" class="ag-theme-quartz grid small"></div>
+  <div id="view-ops" class="view" role="tabpanel" aria-labelledby="tab-ops">
+  <section class="card" id="approvals-card">
+    <div class="row"><h2>Pending approvals <span id="approvals-count" class="count-badge" hidden></span></h2><span class="hint">Over a cap → a human decides · review opens a confirmation</span></div>
+    <div id="approvals" class="ag-theme-quartz grid auto hug"></div>
   </section>
 
   <section class="card">
-    <div class="row"><h2>Orders</h2><span class="hint">PayPal Orders v2 status</span></div>
-    <div id="orders" class="ag-theme-quartz grid"></div>
+    <div class="row"><h2>Orders</h2><span class="hint">PayPal Orders v2 status · nothing is captured until the buyer pays on PayPal</span></div>
+    <div id="orders" class="ag-theme-quartz grid auto hug"></div>
   </section>
 
   <section class="card">
     <div class="row"><h2>Spend vs caps</h2><span class="hint" id="spend-day"></span></div>
-    <div id="spend" class="ag-theme-quartz grid tiny"></div>
+    <div id="spend" class="ag-theme-quartz grid auto hug has-rows"></div>
   </section>
   </div>
 
-  <div id="view-audit" class="view" hidden>
+  <div id="view-audit" class="view" role="tabpanel" aria-labelledby="tab-audit" hidden>
   <section class="card">
     <div class="row"><h2>Guardrail audit</h2><span class="hint">Every policy decision · click a row for its quote, rules and payment timeline</span></div>
     <div class="toolbar">
-      <input id="audit-search" type="search" placeholder="Search all columns (merchant, rule, request id…)" autocomplete="off">
+      <input id="audit-search" type="search" placeholder="Search all columns (merchant, rule, request id…)" autocomplete="off" aria-label="Search the audit log">
       <label class="hint"><input id="audit-hide-checks" type="checkbox"> hide read-only checks</label>
       <label class="hint"><input id="audit-show-ids" type="checkbox"> show ids</label>
       <span class="legend"><i class="risk-DENY"></i>deny <i class="risk-NEEDS_APPROVAL"></i>needs approval <i class="risk-NEEDS_RECONCILIATION"></i>unconfirmed payment</span>
@@ -75,8 +103,8 @@
       <button id="audit-older" class="btn" type="button" hidden>Load older</button></div>
     <div id="audit-wrap" class="audit-wrap">
       <div id="audit" class="ag-theme-quartz grid audit-grid"></div>
-      <aside id="audit-detail" class="detail" hidden>
-        <div class="row"><h3 id="detail-title">Decision</h3><button id="detail-close" class="btn grid-btn" type="button">Close</button></div>
+      <aside id="audit-detail" class="detail" aria-labelledby="detail-title" hidden>
+        <div class="row"><h3 id="detail-title">Decision</h3><button id="detail-close" class="btn sm" type="button">Close</button></div>
         <div id="detail-asof" class="hint"></div>
         <div id="detail-body"></div>
       </aside>
@@ -84,7 +112,7 @@
   </section>
   </div>
 
-  <div id="view-policy" class="view" hidden>
+  <div id="view-policy" class="view" role="tabpanel" aria-labelledby="tab-policy" hidden>
   <section class="card">
     <div class="row"><h2>Spend over time</h2><span class="hint" id="chart-note">Captured vs reserved per day (policy timezone) against the daily cap</span></div>
     <div class="toolbar"><label class="hint">Days
@@ -101,16 +129,35 @@
       <button id="policy-save" class="btn primary" type="button" disabled>Save policy</button>
     </div>
     <div class="policy-grids">
-      <div><h3>Caps</h3><div id="policy-caps" class="ag-theme-quartz grid tiny"></div></div>
+      <div><h3>Caps</h3><div id="policy-caps" class="ag-theme-quartz grid auto"></div></div>
       <div><h3>Merchants</h3><div id="policy-merchants" class="ag-theme-quartz grid policy-list"></div></div>
       <div><h3>Categories</h3><div id="policy-categories" class="ag-theme-quartz grid policy-list"></div></div>
     </div>
     <h3>Change history</h3>
-    <div id="policy-history" class="ag-theme-quartz grid tiny"></div>
+    <div id="policy-history" class="ag-theme-quartz grid auto"></div>
   </section>
   </div>
 </main>
-<div id="toast" class="toast" hidden></div>
+
+<footer class="foot">PayPal Orders v2 · AG Grid Community · open source (MIT)</footer>
+
+<div id="modal" class="modal" hidden>
+  <div id="modal-box" class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-intro">
+    <h2 id="modal-title">Confirm</h2>
+    <p id="modal-intro"></p>
+    <dl id="modal-rows" class="mrows"></dl>
+    <ul id="modal-notes" class="mnotes" hidden></ul>
+    <label id="modal-token-row" class="mtoken" hidden>Approver token
+      <input id="modal-token" type="password" autocomplete="off" placeholder="required by the server">
+    </label>
+    <div class="mactions">
+      <button id="modal-cancel" class="btn" type="button">Cancel</button>
+      <button id="modal-confirm" class="btn primary" type="button">Confirm</button>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="/static/ui.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/policy.js"></script>
 </body>
