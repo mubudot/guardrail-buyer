@@ -56,7 +56,7 @@ prompt injection (buy a gift card from a blocked merchant, a $640 chair over the
 through.
 
 *The demo video shows the dashboard flow with the built-in agent; the MCP server and the Policy & spend
-tab were added after recording (README: "Use it from any MCP agent", repro step 10).*
+tab were added after recording (README: "Use it from any MCP agent" and the Policy & spend tab, repro steps 10–11).*
 
 ## How we built it
 
@@ -196,7 +196,7 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 402 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
+python -m pytest -q                      # 412 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card

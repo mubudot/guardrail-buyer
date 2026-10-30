@@ -50,7 +50,9 @@ natural-language request                     any MCP client (Claude Desktop, Cod
         │                                              │
         ▼                                              ▼
  BuyerService ── guardrail engine (pure) ── SpendLedger (SQLite)   app/service.py, app/guardrails.py,
-                                                                   app/store.py, app/catalog.py
+                                                                   app/store.py, app/catalog.py,
+                                                                   app/reporting.py (audit/spend views),
+                                                                   app/policy_admin.py (owner policy edits)
         │
         ▼
  PayPalClient: MockPayPal | SandboxPayPal (Orders v2)              app/paypal_client.py
@@ -159,7 +161,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 402 passed, 2 skipped (jsdom UI test, optional MCP SDK interop; 3 skipped without node)
+python -m pytest -q                                     # -> 412 passed, 2 skipped (jsdom UI test, optional MCP SDK interop; 3 skipped without node)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -231,19 +233,25 @@ providers (`app/llm/`) offer the model the same four tools, and every tool call 
 use `AGENT_MODE=offline` (above).
 
 ```bash
+# .env: one VAR=value per line; pick ONE of (a) / (b). Replace the 'your-…' values.
 # (a) Anthropic Messages API, or any Messages-compatible endpoint
-LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-…  MODEL=claude-sonnet-5-5
-#   optional: ANTHROPIC_BASE_URL=<Messages-compatible base URL>  ANTHROPIC_AUTH_TOKEN=… (sent as Bearer instead of x-api-key)
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your-anthropic-key
+MODEL=claude-sonnet-5-5
+#   optional: ANTHROPIC_BASE_URL=https://your-messages-compatible-host
+#   optional: ANTHROPIC_AUTH_TOKEN=your-token        (sent as Bearer instead of x-api-key)
 
 # (b) OpenAI-compatible Chat Completions with tool calling
-LLM_PROVIDER=openai OPENAI_API_KEY=sk-…  OPENAI_MODEL=<model id>                    # OpenAI (default base https://api.openai.com/v1)
-LLM_PROVIDER=openai OPENAI_BASE_URL=https://openrouter.ai/api/v1 OPENAI_API_KEY=sk-or-…  OPENAI_MODEL=<provider/model>   # OpenRouter
-LLM_PROVIDER=openai OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=<local model with tool support>  # Ollama (no key)
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your-openai-key                       # not needed for a local Ollama
+OPENAI_MODEL=your-model-id                           # e.g. provider/model on OpenRouter
+OPENAI_BASE_URL=https://api.openai.com/v1            # OpenRouter: https://openrouter.ai/api/v1 · Ollama: http://localhost:11434/v1
 #   DeepSeek, vLLM, LM Studio or a gateway work the same way: set OPENAI_BASE_URL to the server's /v1 base.
 #   Newer OpenAI models want max_completion_tokens: OPENAI_MAX_TOKENS_PARAM=max_completion_tokens (or none)
 ```
 
-Put the lines in `.env` or prefix `python -m app.cli "…"` / `uvicorn app.main:app` with them. The model must
+Put the lines in `.env`, or pass them as a one-shot command prefix, e.g.
+`LLM_PROVIDER=openai OPENAI_API_KEY=your-openai-key OPENAI_MODEL=your-model-id python -m app.cli "2 USB-C cables"`. The model must
 support tool (function) calling. Upstream errors are reduced to a known error type and a short message;
 any configured secret or key-like token is withheld or masked before it can reach a client.
 
@@ -265,7 +273,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `402 passed, 2 skipped` (no network, no API key needed; the skips need jsdom / the official `mcp` SDK; without `node` one more test is skipped).
+1. **Run the tests** — `python -m pytest -q` → see `412 passed, 2 skipped` (no network, no API key needed; the skips need jsdom / the official `mcp` SDK; without `node` one more test is skipped).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -290,8 +298,9 @@ return / cancel links and the mock checkout).
 8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`; without a key: `AGENT_MODE=offline python -m app.cli "…"`, sample in `docs/sample_offline_run.txt`). The CLI starts from an empty in-memory ledger each run. `CLI_DB_PATH=<file>` makes it use a database file; in mock mode the CLI must then own that file exclusively (same lock as the server) and exits with code 3 while a mock server uses it, so do **not** point the CLI at a running mock server's database. Sharing a database between CLI and server works only in Sandbox mode.
 9. **Audit every decision** — open the **Audit** tab (or `curl localhost:8000/decisions`) → one row per guardrail decision: the gift card is a red `deny` (rule hit `merchant_blocklist`/`category_allowlist`), the keyboard an amber `approval` (`per_order_cap`), an order whose payment is unconfirmed is highlighted orange. Filter any column, search with the box, **Export CSV**, and click a row → quote, every rule evaluated and the payment timeline (`CREATING → PAYER_ACTION_REQUIRED → CAPTURING → COMPLETED`). The Audit tab says how much of the history it shows ("Showing newest 1000 of N"); **Load older** pages back with the API cursor; it polls only while the tab is visible, and the open detail refreshes with each poll (labelled with its snapshot time). CSV cells that start with `= + - @` (or tab / CR) are prefixed with `'` so spreadsheets do not evaluate them. Headless check without a browser: `node scripts/ui_smoke_jsdom.cjs http://127.0.0.1:8000` (needs `npm i jsdom@24`); `GRB_JSDOM_NODE_PATH=<that node_modules> pytest tests/test_ui_jsdom.py` runs the Audit-tab regressions (skipped without jsdom).
 10. **Edit the policy** — open the **Policy & spend** tab → the spend-over-time chart and the policy grids. Double-click
-    *Per-order cap*, type `100`, Enter → the cell turns yellow, **Save policy** (owner token: blank = the approver
-    token `demo`) → saved, listed in *Change history*, and the keyboard from step 4 is now within policy
+    *Per-order cap*, type `100`, Enter, then *Daily cap*, type `250`, Enter (after steps 4 and 6 today's total is
+    $114.98, so a second $89 keyboard would also pass the old $150 daily cap) → the cells turn yellow, **Save policy**
+    (owner token: blank = the approver token `demo`) → saved, listed in *Change history*, and another keyboard is now within policy
     (`curl -X POST localhost:8000/tools/check_policy -H 'content-type: application/json' -d '{"arguments":{"product_id":"P-1003","quantity":1}}'`
     → `ALLOW`). Try a per-order cap above the daily cap → refused by the server, nothing changes. Without the
     token: `curl -X PUT localhost:8000/policy -H 'content-type: application/json' -d '{"daily_cap":"1000"}'` → `401`.

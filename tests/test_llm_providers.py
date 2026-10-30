@@ -351,3 +351,29 @@ def test_transport_error_does_not_chain_the_raw_exception(monkeypatch):
     with pytest.raises(LLMError) as ei:
         openai_post({"messages": []})
     assert ei.value.__cause__ is None and ei.value.__suppress_context__
+
+
+@pytest.mark.parametrize("body", [[], "x", {"content": "x"}, {"content": [None]}, {"content": [{"type": "text"}]},
+                                  {"content": [{"type": "tool_use", "name": "t", "input": {}}]},
+                                  {"content": [{"type": "tool_use", "id": "a", "name": "t", "input": "x"}]}])
+def test_anthropic_malformed_200_is_an_llm_error(monkeypatch, body):
+    monkeypatch.setattr(httpx, "post", Capture(httpx.Response(200, json=body)))
+    with pytest.raises(LLMError):
+        anthropic_post({"model": "m", "messages": []})
+
+
+def test_anthropic_odd_usage_is_normalised(monkeypatch):
+    monkeypatch.setattr(httpx, "post", Capture(httpx.Response(200, json={"content": [], "usage": {"input_tokens": "x"}})))
+    out = anthropic_post({"model": "m", "messages": []})
+    assert out["usage"] == {"input_tokens": 0, "output_tokens": 0} and out["stop_reason"] == ""
+
+
+def test_anthropic_malformed_reply_after_a_purchase_keeps_the_partial_result(service, monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    first = {"content": [{"type": "tool_use", "id": "t1", "name": "create_order",
+                          "input": {"product_id": "P-1001", "quantity": 1}}], "stop_reason": "tool_use"}
+    monkeypatch.setattr(httpx, "post", Capture(httpx.Response(200, json=first), httpx.Response(200, json=[])))
+    res = PurchasingAgent(service).run("a cable")
+    assert res.stopped_reason == "llm_error"
+    assert "bought and paid" in res.final_text and "stopped early" in res.final_text

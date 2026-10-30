@@ -1,4 +1,5 @@
-"""Business layer: the BuyerService (catalog in catalog.py, SQLite store in store.py).
+"""Business layer: the BuyerService (catalog in catalog.py, SQLite store and order statuses in
+store.py, audit/spend views in reporting.py, owner policy edits in policy_admin.py).
 
 Every money-moving path goes through `BuyerService`, which re-runs the
 guardrail engine server-side. The AI agent can *ask*; it only ever calls these
@@ -47,43 +48,22 @@ from .guardrails import (Decision, OrderRequest, Policy, SpendLedger, Verdict,
                          evaluate, explain_rules, hard_rules_only, money)
 from .catalog import Catalog
 from .paypal_client import MockPayPal, PayPalClient, PayPalError
-from .store import Store
+from .policy_admin import PolicyAdminMixin, PolicyConflict
+from .reporting import ReportingMixin
+from .store import (COUNTED_STATUSES, OPEN_STATUSES, RELEASED_STATUSES, RESERVED_STATUSES,  # noqa: F401
+                    STUCK_AFTER, Store)
 
 __all__ = ["BuyerService", "Catalog", "Store", "MockLockError", "PolicyConflict"]
-
-
-class PolicyConflict(ValueError):
-    """An owner edit was based on a policy revision that is no longer current."""
 
 
 class MockLockError(RuntimeError):
     """Another process already serves this database in mock mode."""
 
 
+class BuyerService(ReportingMixin, PolicyAdminMixin):
+    """Orders, approvals and payments (this file); audit/spend views in reporting.py;
+    owner policy edits in policy_admin.py."""
 
-# Order lifecycle (orders.status). Every arrow is a conditional UPDATE on the old status.
-#   CREATING  -- budget checked and amount RESERVED in the same transaction, PayPal not called yet
-#   CREATING -> PAYER_ACTION_REQUIRED          (PayPal order exists, buyer must approve)
-#            -> FAILED                         (PayPal definitively refused to create; released)
-#            -> NEEDS_RECONCILIATION           (create outcome unknown; still reserved)
-#   PAYER_ACTION_REQUIRED -> CAPTURING         (capture call in flight; cancel/expiry can't touch it)
-#                         -> CANCELLED / EXPIRED   (released)
-#   CAPTURING -> COMPLETED                     (capture confirmed COMPLETED)
-#             -> PAYER_ACTION_REQUIRED         (PayPal: buyer has not approved yet)
-#             -> CAPTURE_FAILED                (definitive decline/refusal; released)
-#             -> NEEDS_RECONCILIATION          (5xx / transport error / capture PENDING; still reserved)
-#   NEEDS_RECONCILIATION -> any of the above, decided from PayPal's order status (reconcile()).
-#   MOCK_RESET: mock-provider order lost on restart (mock state is in-memory); released.
-# Spend accounting: the ledger row is written when the order row is (before PayPal is
-# called) and deleted only on a released status. A reservation stays on the day it was made.
-RESERVED_STATUSES = ("CREATING", "PAYER_ACTION_REQUIRED", "CAPTURING", "NEEDS_RECONCILIATION")
-OPEN_STATUSES = RESERVED_STATUSES  # backwards-compatible name
-RELEASED_STATUSES = ("CANCELLED", "EXPIRED", "CAPTURE_FAILED", "FAILED", "MOCK_RESET")
-COUNTED_STATUSES = RESERVED_STATUSES + ("COMPLETED",)
-STUCK_AFTER = timedelta(minutes=10)  # CREATING/CAPTURING older than this may be reconciled
-
-
-class BuyerService:
     def __init__(self, policy: Policy, catalog: Catalog, paypal: PayPalClient,
                  db_path: str = ":memory:", clock=None, approval_ttl: timedelta | None = None):
         self.policy, self.catalog, self.paypal = policy, catalog, paypal
@@ -153,6 +133,7 @@ class BuyerService:
     # ---- read-only check ----------------------------------------------
     def check(self, product_id: str, quantity: int = 1, request_id: str | None = None) -> dict[str, Any]:
         self.sync_policy()
+        self.expire_stale()  # unpaid orders past their TTL no longer count against the caps
         request_id = self._group(request_id)
         p, req = self._line(product_id, quantity)
         spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
@@ -632,284 +613,6 @@ class BuyerService:
                         lost.append(o["id"])
         return lost
 
-    # ---- audit (fix round 6) ----------------------------------------------
-    _DECISIONS_Q = ("SELECT d.*, COALESCE(o.status, ao.status) AS order_status, "
-                    "COALESCE(d.order_id, a.order_id) AS linked_order_id, a.status AS approval_status "
-                    "FROM decisions d LEFT JOIN approvals a ON a.id=d.approval_id "
-                    "LEFT JOIN orders o ON o.id=d.order_id LEFT JOIN orders ao ON ao.id=a.order_id ")
-
-    # compact list projection (CODEX_REVIEW_4 N5): the grid needs no per-rule detail, so
-    # `rules` / `spent_before` stay out of the list and are loaded lazily by decision_detail
-    _LIST_COLS = ("id", "created_at", "stage", "request_id", "product_id", "product_name", "merchant",
-                  "category", "quantity", "amount", "currency", "verdict", "outcome", "rule_hit",
-                  "reasons", "order_id", "approval_id")
-    AUDIT_PAGE_MAX = 5000
-
-    def _decision_rows(self, where: str, args: list[Any], limit: int, compact: bool) -> list[dict[str, Any]]:
-        sel = ", ".join(f"d.{c}" for c in self._LIST_COLS) if compact else "d.*"
-        q = self._DECISIONS_Q.replace("SELECT d.*", f"SELECT {sel}", 1)
-        with self.store.lock:
-            rows = self.store.conn.execute(
-                q + where + "ORDER BY d.created_at DESC, d.rowid DESC LIMIT ?", [*args, limit]).fetchall()
-        out = []
-        for r in rows:
-            d = self.store._decode(dict(r))
-            d["risk"] = self._risk(d)
-            out.append(d)
-        return out
-
-    def list_decisions(self, limit: int = 1000, decision_id: str | None = None) -> list[dict[str, Any]]:
-        """Every guardrail decision, newest first, with the current status of the order /
-        approval it led to (so the audit grid can highlight NEEDS_RECONCILIATION).
-        Full rows (including every rule); the HTTP list uses decisions_page()."""
-        self.expire_stale()
-        limit = max(1, min(int(limit), self.AUDIT_PAGE_MAX))
-        where, args = ("WHERE d.id=? ", [decision_id]) if decision_id else ("", [])
-        return self._decision_rows(where, args, limit, compact=False)
-
-    def decisions_page(self, limit: int = 1000, before_id: str | None = None) -> dict[str, Any]:
-        """One page of the audit log for the dashboard / API (CODEX_REVIEW_4 N5): compact
-        rows, newest first, at most `limit` (1..5000), strictly older than the decision
-        `before_id` (keyset cursor on created_at, rowid: stable while new rows arrive).
-        Returns the TOTAL number of decisions so a client can say "showing N of TOTAL",
-        and `next_before_id` to fetch the next older page (None when exhausted)."""
-        self.expire_stale()
-        limit = max(1, min(int(limit), self.AUDIT_PAGE_MAX))
-        where, args = "", []
-        if before_id:
-            with self.store.lock:
-                cur = self.store.conn.execute("SELECT created_at, rowid FROM decisions WHERE id=?",
-                                              (before_id,)).fetchone()
-            if cur is None:
-                raise KeyError(before_id)
-            where = "WHERE (d.created_at < ? OR (d.created_at = ? AND d.rowid < ?)) "
-            args = [cur[0], cur[0], cur[1]]
-        rows = self._decision_rows(where, args, limit + 1, compact=True)
-        has_more = len(rows) > limit
-        rows = rows[:limit]
-        with self.store.lock:
-            total = self.store.conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
-        return {"items": rows, "total": total, "limit": limit, "before_id": before_id,
-                "has_more": has_more, "next_before_id": rows[-1]["id"] if has_more and rows else None}
-
-    @staticmethod
-    def _risk(d: dict[str, Any]) -> str:
-        """The single highlight class of an audit row (most severe first)."""
-        if d.get("order_status") == "NEEDS_RECONCILIATION":
-            return "NEEDS_RECONCILIATION"
-        if d.get("verdict") == "DENY":
-            return "DENY"
-        if d.get("verdict") == "NEEDS_APPROVAL":
-            return "NEEDS_APPROVAL"
-        return "ALLOW"
-
-    def order_timeline(self, oid: str) -> list[dict[str, Any]]:
-        with self.store.lock:
-            rows = self.store.conn.execute(
-                "SELECT at, from_status, to_status, op_gen, note FROM order_events WHERE order_id=? "
-                "ORDER BY id", (oid,)).fetchall()
-        return [dict(r) for r in rows]
-
-    def decision_detail(self, did: str) -> dict[str, Any]:
-        """One decision with its quote, every rule evaluated, the approval it raised or
-        executed, and the payment timeline (order status transitions) of its order."""
-        rows = self.list_decisions(1, decision_id=did)
-        if not rows:
-            raise KeyError(did)
-        d = rows[0]
-        quote = self._quote(d["product_id"], d["quantity"], d["amount"], d["currency"],
-                            d["merchant"], d["category"])
-        approval = self.store.get("approvals", d["approval_id"]) if d.get("approval_id") else None
-        oid = d.get("linked_order_id")
-        order = self.store.get("orders", oid) if oid else None
-        timeline = self.order_timeline(oid) if oid else []
-        if order and not timeline:  # order written by a version without the timeline table
-            timeline = [{"at": order["created_at"], "from_status": None, "to_status": "CREATING",
-                         "op_gen": None, "note": "legacy order: only creation and current status known"}]
-            if order["status"] != "CREATING":
-                timeline.append({"at": order.get("updated_at"), "from_status": None,
-                                 "to_status": order["status"], "op_gen": order.get("op_gen"),
-                                 "note": order.get("paypal_status")})
-        related, related_total = [], 0
-        if d.get("request_id"):
-            # bounded + indexed (decisions_req): the first RELATED_MAX decisions of this
-            # request/product, plus the total so the panel can say what it omitted
-            with self.store.lock:
-                related = [dict(r) for r in self.store.conn.execute(
-                    "SELECT id, created_at, stage, verdict, outcome, rule_hit FROM decisions "
-                    "WHERE request_id=? AND product_id=? ORDER BY created_at, rowid LIMIT ?",
-                    (d["request_id"], d["product_id"], self.RELATED_MAX)).fetchall()]
-                related_total = self.store.conn.execute(
-                    "SELECT COUNT(*) FROM decisions WHERE request_id=? AND product_id=?",
-                    (d["request_id"], d["product_id"])).fetchone()[0]
-        return {"decision": d, "quote": quote, "rules": d.get("rules") or [], "approval": approval,
-                "order": order, "timeline": timeline, "related_decisions": related,
-                "related_total": related_total, "as_of": self._ts()}
-
-    RELATED_MAX = 50
-
-    def spend_summary(self) -> dict[str, Any]:
-        """Today's spend split into captured vs reserved, against the caps."""
-        self.sync_policy()
-        self.expire_stale()
-        day, cur = self._today(), self.policy.currency
-        captured = reserved = Decimal("0")
-        unconfirmed = 0
-        for d, cents, c, ref in self.ledger.entries():
-            if d != day or c != cur:
-                continue
-            amt = Decimal(cents) / 100
-            o = self.store.get("orders", ref) if ref else None
-            if o and o["status"] in RESERVED_STATUSES:
-                reserved += amt
-                unconfirmed += o["status"] == "NEEDS_RECONCILIATION"
-            else:
-                captured += amt
-        total = captured + reserved
-        cap = self.policy.daily_cap
-        return {"day": day, "currency": cur, "captured": str(money(captured)),
-                "reserved": str(money(reserved)), "total": str(money(total)),
-                "daily_cap": str(cap), "remaining": str(money(max(cap - total, Decimal("0")))),
-                "per_order_cap": str(self.policy.per_order_cap),
-                "hard_max_per_order": str(self.policy.hard_max_per_order),
-                "needs_reconciliation": unconfirmed}
-
-    # ---- owner-editable policy (stored in the DB, shared by every process) ----------
-    POLICY_EDITABLE = ("per_order_cap", "daily_cap", "hard_max_per_order", "allowed_categories",
-                       "allowed_merchants", "blocked_merchants")
-    POLICY_MAX_AMOUNT = Decimal("1000000")
-    POLICY_HISTORY_MAX = 200
-
-    def sync_policy(self) -> Policy:
-        """Adopt the owner's policy override if another call or process changed it. One
-        indexed read; called at the start of every policy decision. Read and adopt happen
-        under the store lock, which every policy write holds too, so a slow reader can never
-        install an older policy over a newer one."""
-        with self.store.lock:
-            row = self.store.conn.execute("SELECT value FROM meta WHERE key='policy_override'").fetchone()
-            raw = row[0] if row else None
-            if raw != self._policy_raw:
-                self.policy = Policy.from_dict(json.loads(raw)) if raw else self.base_policy
-                self._policy_raw = raw
-            return self.policy
-
-    def policy_snapshot(self) -> tuple[dict[str, Any], str]:
-        """The policy in force and its revision, read together (one consistent snapshot)."""
-        with self.store.lock:
-            return self.sync_policy().to_dict(), self.policy_revision()
-
-    def policy_revision(self) -> str:
-        """Opaque id of the policy in force (changes with every owner edit), for
-        optimistic concurrency: PUT /policy with a stale base_revision is refused."""
-        with self.store.lock:
-            self.sync_policy()
-            raw = self._policy_raw or "base:" + json.dumps(self.base_policy.to_dict(), sort_keys=True)
-            return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-    @classmethod
-    def validate_policy_update(cls, current: Policy, body: Any) -> Policy:
-        """Strict validation of an owner edit. Only the caps and the lists are editable;
-        currency and timezone stay as configured. Raises ValueError with a readable reason."""
-        if not isinstance(body, dict) or not body:
-            raise ValueError("send a JSON object with the fields to change")
-        extra = sorted(set(body) - set(cls.POLICY_EDITABLE))
-        if extra:
-            raise ValueError(f"not editable: {', '.join(extra)[:120]} (editable: {', '.join(cls.POLICY_EDITABLE)})")
-        merged = current.to_dict()
-        for key in ("per_order_cap", "daily_cap", "hard_max_per_order"):
-            if key not in body:
-                continue
-            v = body[key]
-            if isinstance(v, bool) or not isinstance(v, (str, int, float)):
-                raise ValueError(f"{key} must be an amount like \"50\" or \"49.99\"")
-            s = str(v).strip()
-            if not re.fullmatch(r"[0-9]{1,7}(\.[0-9]{1,2})?", s):
-                raise ValueError(f"{key} must be a positive amount with at most 2 decimals, got {s[:20]!r}")
-            amt = Decimal(s)
-            if amt <= 0 or amt > cls.POLICY_MAX_AMOUNT:
-                raise ValueError(f"{key} must be between 0.01 and {cls.POLICY_MAX_AMOUNT}")
-            merged[key] = str(money(amt))
-        for key in ("allowed_categories", "allowed_merchants", "blocked_merchants"):
-            if key not in body:
-                continue
-            v = body[key]
-            if not isinstance(v, list) or len(v) > 50 or not all(isinstance(x, str) for x in v):
-                raise ValueError(f"{key} must be a list of at most 50 names")
-            names = [x.strip().lower() for x in v]
-            if any(not n or len(n) > 80 or any(ord(ch) < 32 for ch in n) for n in names):
-                raise ValueError(f"{key}: every name must be 1-80 printable characters")
-            if len(set(names)) != len(names):
-                raise ValueError(f"{key} contains duplicates")
-            merged[key] = names
-        for key in ("allowed_categories", "allowed_merchants"):
-            if not merged[key]:  # the engine reads an empty allowlist as "anything goes"
-                raise ValueError(f"{key} cannot be empty (an empty allowlist would allow everything)")
-        both = sorted(set(merged["allowed_merchants"]) & set(merged["blocked_merchants"]))
-        if both:
-            raise ValueError(f"merchant(s) both allowed and blocked: {', '.join(both)[:120]}")
-        if money(merged["per_order_cap"]) > money(merged["daily_cap"]):
-            raise ValueError("per_order_cap must not exceed daily_cap")
-        return Policy.from_dict(merged)  # also checks hard_max_per_order >= per_order_cap
-
-    def update_policy(self, body: Any, actor: str = "owner", base_revision: str | None = None) -> dict[str, Any]:
-        """Apply an owner edit atomically (validated against the policy current inside the
-        write transaction) and append it to the policy history. With `base_revision` (the
-        dashboard always sends it) an edit made on a policy that changed meanwhile is refused
-        (PolicyConflict) instead of silently undoing the other edit. Orders already created are
-        not revoked; pending approvals are re-checked against the deny rules when approved."""
-        with self.store.tx() as c:
-            current = self.sync_policy()
-            if base_revision is not None and base_revision != self.policy_revision():
-                raise PolicyConflict("the policy was changed by someone else since you loaded it; "
-                                     "reload and apply your edit again")
-            new = self.validate_policy_update(current, body)
-            before, after = current.to_dict(), new.to_dict()
-            changed = {k: {"from": before[k], "to": after[k]} for k in after if before[k] != after[k]}
-            if not changed:
-                return {"result": "UNCHANGED", "policy": after, "revision": self.policy_revision()}
-            raw = json.dumps(after, sort_keys=True)
-            c.execute("INSERT INTO meta(key, value) VALUES ('policy_override', ?) "
-                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (raw,))
-            row = c.execute("SELECT value FROM meta WHERE key='policy_history'").fetchone()
-            hist = json.loads(row[0]) if row else []
-            entry = {"id": "POL-" + uuid.uuid4().hex[:8].upper(), "at": self._ts(), "actor": actor,
-                     "changes": changed}
-            hist = ([entry] + hist)[:self.POLICY_HISTORY_MAX]
-            c.execute("INSERT INTO meta(key, value) VALUES ('policy_history', ?) "
-                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(hist),))
-            self.policy, self._policy_raw = new, raw
-            revision = self.policy_revision()
-        return {"result": "UPDATED", "policy": after, "change": entry, "revision": revision}
-
-    def policy_history(self) -> list[dict[str, Any]]:
-        with self.store.lock:
-            row = self.store.conn.execute("SELECT value FROM meta WHERE key='policy_history'").fetchone()
-        return json.loads(row[0]) if row else []
-
-    def spend_history(self, days: int = 14) -> dict[str, Any]:
-        """Daily spend for the last `days` days (policy timezone, today last), split into
-        captured and still-reserved amounts, with the current caps for reference."""
-        self.sync_policy()
-        self.expire_stale()
-        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 90:
-            raise ValueError("days must be between 1 and 90")
-        today = datetime.fromisoformat(self._today()).date()
-        span = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
-        rows = {d: {"captured": Decimal("0"), "reserved": Decimal("0"), "orders": 0} for d in span}
-        cur = self.policy.currency
-        for d, cents, c, ref in self.ledger.entries():
-            if d not in rows or c != cur:
-                continue
-            o = self.store.get("orders", ref) if ref else None
-            key = "reserved" if o and o["status"] in RESERVED_STATUSES else "captured"
-            rows[d][key] += Decimal(cents) / 100
-            rows[d]["orders"] += 1
-        return {"currency": cur, "daily_cap": str(self.policy.daily_cap),
-                "per_order_cap": str(self.policy.per_order_cap),
-                "days": [{"day": d, "captured": str(money(r["captured"])), "reserved": str(money(r["reserved"])),
-                          "total": str(money(r["captured"] + r["reserved"])), "orders": r["orders"]}
-                         for d, r in rows.items()]}
-
     @staticmethod
     def _result(order: dict[str, Any]) -> str:
         st = order["status"]
@@ -923,6 +626,7 @@ class BuyerService:
 
     def place_order(self, product_id: str, quantity: int = 1, request_id: str | None = None) -> dict[str, Any]:
         p, req = self._line(product_id, quantity)
+        self.expire_stale()  # release expired reservations first (own transaction; only ever loosens the caps)
         with self.store.tx():  # check + reserve atomically, before any PayPal I/O (B1)
             self.sync_policy()
             request_id = self._group(request_id)
@@ -944,6 +648,7 @@ class BuyerService:
     def request_approval(self, product_id: str, quantity: int, justification: str,
                          request_id: str | None = None) -> dict[str, Any]:
         self.sync_policy()
+        self.expire_stale()
         request_id = self._group(request_id)
         p, req = self._line(product_id, quantity)
         spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
@@ -971,6 +676,7 @@ class BuyerService:
         """Human approval. Claims the approval exactly once (PENDING -> EXECUTING) in the
         same transaction that creates its single order and reservation. A repeated call
         returns the existing order. A changed quote (B5) or a deny rule refuses."""
+        self.expire_stale()
         with self.store.tx() as c:
             self.sync_policy()
             a = self.store.get("approvals", approval_id)

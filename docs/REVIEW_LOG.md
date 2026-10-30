@@ -177,3 +177,19 @@ gateway that serves both formats): both bought the cable (ORDER_PLACED) and requ
 | L4 | Codex (low) | Placeholder hosts in a test and the README. | `localhost` / `<Messages-compatible base URL>`. |
 
 Not re-sent to Codex (one review per change, by plan); verified by the suite (`402 passed, 2 skipped`).
+
+## Pre-submission release check (2026-10-30)
+
+Fresh `git clone` to /tmp, fresh venv, README offline copy-paste block run verbatim (no keys, mock PayPal, rule-based
+agent): tests, server ready check, the mixed request (order to pay / approval / refusal), `/spend` and the CLI all as
+documented. One Codex release review (judge-readability, modularity, correctness), report kept outside the repo.
+
+| ID | Source | Finding | Fix |
+| --- | --- | --- | --- |
+| RC1 | Codex (must-fix) | Expired unpaid orders kept counting against the caps in `check` / `place_order` / `request_approval` / `approve` until something read `/spend`. | Those paths call `expire_stale()` first (+test). |
+| RC2 | Codex (must-fix) | A malformed HTTP 200 from the Messages API after a purchase raised a 500 and hid the paid order. | `validate_messages_response`: shape-checked, malformed → `LLMError`, so the agent reports the partial result (+9 tests). |
+| RC3 | Codex (must-fix) | README repro step 10 promised `ALLOW` after raising only the per-order cap; the daily cap still bites ($114.98 + $89 > $150). | Step 10 also raises the daily cap to 250 (verified). |
+| RC4 | Codex (must-fix) | Bring-your-own-model examples were multi-assignment lines that break when pasted into `.env`. | One `VAR=value` per line; one-shot command-prefix example separately. |
+| RC5 | Codex (must-fix) | `scripts/sandbox_smoke.py` ignored `.env` and defaulted to `PAYPAL_AUTH=proxy`. | Loads `.env` like the app (unless `GRB_NO_DOTENV=1`); OAuth stays the default. |
+| RC6 | Codex (should-fix) | `app/service.py` was 1,037 lines mixing payments, audit views and policy admin. | Split into `app/reporting.py` (audit/spend views) and `app/policy_admin.py` (owner policy edits) as mixins; order statuses moved to `app/store.py`; `service.py` keeps reservation/capture/approval orchestration (743 lines). Public API unchanged. |
+| RC7 | Codex (should-fix/nit) | Stale counts in REQUIREMENTS_CHECK, DEVPOST step reference. | Updated to 414 (412 passed + 2 skipped). |

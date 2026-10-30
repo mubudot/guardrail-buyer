@@ -14,8 +14,9 @@ capture before buyer approval returns ORDER_NOT_APPROVED and changes nothing ->
 cancel releases the reserved budget. Buyer approval itself needs a Sandbox
 personal account in a browser and is out of scope here.
 
-Env for in-process mode: PAYPAL_AUTH=proxy (egress proxy injects Basic auth) or
-PAYPAL_AUTH=oauth with PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET.
+Env for in-process mode: read from the repository's .env (unless GRB_NO_DOTENV=1; real environment
+variables win): PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET (PAYPAL_AUTH=oauth, the default), or
+PAYPAL_AUTH=proxy when an egress proxy injects the Basic auth.
 """
 from __future__ import annotations
 
@@ -137,7 +138,9 @@ def main() -> int:
     if a.app:
         against_app(a.app, a.token, a.agent)
     else:
-        os.environ.setdefault("PAYPAL_AUTH", "proxy")
+        if os.environ.get("GRB_NO_DOTENV") != "1":
+            from dotenv import load_dotenv
+            load_dotenv(ROOT / ".env", override=False)  # same rule as the app: real env vars win
         in_process()
     print("\nRESULT:", "PASS" if not FAILS else f"FAIL ({len(FAILS)}): {FAILS}")
     return 1 if FAILS else 0

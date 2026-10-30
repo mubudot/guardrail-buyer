@@ -39,6 +39,33 @@ def anthropic_post(payload: dict[str, Any], base_url: str | None = None, timeout
                     "AGENT_MODE=offline for the rule-based agent (no AI, no key)")
         raise LLMError(f"Messages API HTTP {r.status_code}: {_safe_error_detail(r, key)}{hint}")
     try:
-        return r.json()
+        body = r.json()
     except ValueError:
         raise LLMError("Messages API returned a non-JSON body (not shown)") from None
+    return validate_messages_response(body)
+
+
+def _count(v: Any) -> int:
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
+
+
+def validate_messages_response(body: Any) -> dict[str, Any]:
+    """Check the shape of a 200 response before the agent uses it. A malformed body is an
+    LLMError, so the agent keeps and reports any partial result (orders already placed)
+    instead of failing the whole request with HTTP 500."""
+    content = body.get("content") if isinstance(body, dict) else None
+    if not isinstance(content, list):
+        raise LLMError("Messages API response has no content list (malformed response, not shown)")
+    for b in content:
+        kind = b.get("type") if isinstance(b, dict) else None
+        if not isinstance(kind, str):
+            raise LLMError("Messages API response has a malformed content block (not shown)")
+        if kind == "text" and not isinstance(b.get("text"), str):
+            raise LLMError("Messages API response has a text block without text (not shown)")
+        if kind == "tool_use" and not (isinstance(b.get("id"), str) and b["id"] and isinstance(b.get("name"), str)
+                                       and b["name"] and isinstance(b.get("input", {}), dict)):
+            raise LLMError("Messages API response has a malformed tool_use block (not shown)")
+    stop = body.get("stop_reason")
+    u = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    return {**body, "content": content, "stop_reason": stop if isinstance(stop, str) else "",
+            "usage": {"input_tokens": _count(u.get("input_tokens")), "output_tokens": _count(u.get("output_tokens"))}}

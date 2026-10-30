@@ -1,6 +1,6 @@
 """SQLite persistence for orders, approvals, decisions and the spend ledger: versioned schema
 migrations, BEGIN IMMEDIATE write transactions and small row helpers. Business rules live in
-BuyerService (service.py); this module only stores rows."""
+BuyerService (service.py); this module stores rows and names the order statuses."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,30 @@ import time
 from contextlib import contextmanager
 from typing import Any
 
+from datetime import timedelta
+
 from .guardrails import SpendLedger
+
+# Order lifecycle (orders.status). Every arrow is a conditional UPDATE on the old status.
+#   CREATING  -- budget checked and amount RESERVED in the same transaction, PayPal not called yet
+#   CREATING -> PAYER_ACTION_REQUIRED          (PayPal order exists, buyer must approve)
+#            -> FAILED                         (PayPal definitively refused to create; released)
+#            -> NEEDS_RECONCILIATION           (create outcome unknown; still reserved)
+#   PAYER_ACTION_REQUIRED -> CAPTURING         (capture call in flight; cancel/expiry can't touch it)
+#                         -> CANCELLED / EXPIRED   (released)
+#   CAPTURING -> COMPLETED                     (capture confirmed COMPLETED)
+#             -> PAYER_ACTION_REQUIRED         (PayPal: buyer has not approved yet)
+#             -> CAPTURE_FAILED                (definitive decline/refusal; released)
+#             -> NEEDS_RECONCILIATION          (5xx / transport error / capture PENDING; still reserved)
+#   NEEDS_RECONCILIATION -> any of the above, decided from PayPal's order status (reconcile()).
+#   MOCK_RESET: mock-provider order lost on restart (mock state is in-memory); released.
+# Spend accounting: the ledger row is written when the order row is (before PayPal is
+# called) and deleted only on a released status. A reservation stays on the day it was made.
+RESERVED_STATUSES = ("CREATING", "PAYER_ACTION_REQUIRED", "CAPTURING", "NEEDS_RECONCILIATION")
+OPEN_STATUSES = RESERVED_STATUSES  # backwards-compatible name
+RELEASED_STATUSES = ("CANCELLED", "EXPIRED", "CAPTURE_FAILED", "FAILED", "MOCK_RESET")
+COUNTED_STATUSES = RESERVED_STATUSES + ("COMPLETED",)
+STUCK_AFTER = timedelta(minutes=10)  # CREATING/CAPTURING older than this may be reconciled
 
 
 class Store:

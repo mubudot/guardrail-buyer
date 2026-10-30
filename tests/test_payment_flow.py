@@ -274,3 +274,15 @@ def test_capture_declined_releases(policy, catalog, clock):
                                             "capture_status": "DECLINED", "raw": {}}
     out = svc.complete_payment(o["paypal_order_id"])
     assert out["status"] == "CAPTURE_FAILED" and svc.spend_summary()["total"] == "0.00"
+
+
+def test_expired_reservations_stop_counting_without_a_read_first(payer_service, clock):
+    """Release check: expired unpaid orders are released by the decision paths themselves
+    (check / place_order / request_approval), not only by GET /spend."""
+    for _ in range(3):  # 3 x 49.00 open orders, never paid
+        payer_service.place_order("P-1002", 2)
+    assert payer_service.check("P-2001", 1)["verdict"] == "NEEDS_APPROVAL"
+    clock.now += payer_service.approval_ttl + timedelta(minutes=1)
+    assert payer_service.check("P-2001", 1)["verdict"] == "ALLOW"
+    assert payer_service.request_approval("P-2001", 1, "x")["result"] == "NOT_NEEDED"
+    assert payer_service.place_order("P-2001", 1)["result"] == "AWAITING_PAYER_APPROVAL"
