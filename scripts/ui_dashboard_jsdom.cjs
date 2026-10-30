@@ -108,15 +108,17 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   if (agentPosts !== 1) fail(`double Ctrl+Enter sent ${agentPosts} agent requests`);
   if (!d.querySelector("#answer .outcomes li") || !d.querySelector("#answer details.trace")) fail("answer: outcomes + collapsed trace expected");
 
-  // connection banner
+  // connection banner. refresh() returns a poll already in flight (started before the flag
+  // changed) and queues one more, so await twice to be sure a refresh ran with the new flag.
+  const fresh = async () => { await w.eval("refresh()"); await w.eval("refresh()"); };
   breakOrders = true;
-  await w.eval("refresh()");
+  await fresh();
   if ($("conn-banner").hidden) fail("a failing poll should show the connection banner");
   breakOrders = false;
-  await w.eval("refresh()");
+  await fresh();
   if (!$("conn-banner").hidden) fail("a good poll should hide the banner");
   w.eval("conn.fail('audit', new Error('boom'))");
-  await w.eval("refresh()");  // core is fine, audit is still down
+  await fresh();  // core is fine, audit is still down
   if ($("conn-banner").hidden || !$("conn-detail").textContent.includes("audit")) fail("core success must not hide an audit failure");
   w.eval("conn.ok('audit')");
   if (!$("conn-banner").hidden) fail("banner should clear once every resource recovered");
@@ -125,9 +127,8 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   // error overlays: a failed first load says "Could not load"; the next good load restores the empty
   // state. Checked on the overlay text actually rendered (approvals is empty here after the reject).
   const shown = (id) => { const o = d.querySelector(`#${id} .ag-overlay`); return o ? o.textContent.replace(/\s+/g, " ").trim() : ""; };
-  const fresh = async () => { await w.eval("refresh()"); await w.eval("refresh()"); };  // one that starts after this point
   breakOrders = true; await w.eval("refresh()");  // let any poll that started before the break finish
-  w.eval("conn.loadedOnce = false"); await w.eval("refresh()"); await sleep(100);
+  w.eval("conn.loadedOnce = false"); await fresh(); await sleep(100);
   if (!/Could not load/.test(shown("approvals"))) fail("failed first load should render 'Could not load': " + shown("approvals"));
   breakOrders = false; await fresh(); await sleep(100);
   if (/Could not load/.test(shown("approvals")) || !/Nothing waiting for you/.test(shown("approvals"))) fail("recovery should render the approvals empty state: " + shown("approvals"));
