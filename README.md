@@ -60,7 +60,7 @@ The dashboard (`app/static/app.js`) is four AG Grid grids that a finance lead wo
 |---|---|
 | Pending approvals | `cellRenderer` **Approve / Reject** buttons calling the approver-token API; the agent's justification and the rules hit, with full text in tooltips (`tooltipField`, `tooltipValueGetter`); `getRowId` |
 | Orders | **Pay with PayPal** link or capture id per order (`cellRenderer`), PayPal order id, status badges; item names wrap (`wrapText` + `autoHeight`); `getRowId` so polling updates rows in place instead of redrawing |
-| Spend vs caps | each guardrail with its limit, today's use and headroom (`valueFormatter` for money, `autoSizeStrategy: fitGridWidth`) |
+| Spend vs caps | one row per guardrail with its limit and what happens above it; today's use and headroom on the daily-cap row (`valueFormatter` for money, `autoSizeStrategy: fitGridWidth`) |
 | Audit | every guardrail decision: `floatingFilter` on every column, a quick-search box (`quickFilterText`), risk colouring (`cellClassRules` / `rowClassRules`: deny red, approval amber, unconfirmed payment orange), **Export CSV** (`exportDataAsCsv` with a `processCellCallback` that neutralises spreadsheet formulas), row click → detail panel with the quote, every rule evaluated and the payment timeline, keyset paging for older rows |
 
 ### Payment flow and spend accounting
@@ -148,7 +148,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 260 passed, 1 skipped (jsdom UI test)
+python -m pytest -q                                     # -> 267 passed, 1 skipped (jsdom UI test)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -229,7 +229,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `260 passed, 1 skipped` (no network, no API key needed).
+1. **Run the tests** — `python -m pytest -q` → see `267 passed, 1 skipped` (no network, no API key needed).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real

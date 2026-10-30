@@ -66,7 +66,7 @@ click any row to see the quote, each rule evaluated and the payment timeline.
   quote, every rule evaluated and the payment's status timeline).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 261 pytest tests (260 run everywhere; 1 headless-browser UI test needs jsdom): guardrails,
+- **Tests:** 268 pytest tests (267 run everywhere; 1 headless-browser UI test needs jsdom): guardrails,
   payment flow, reservations/expiry, ambiguous PayPal outcomes and reconciliation, API, agent loop with a
   scripted fake LLM, offline mode, thread/barrier concurrency tests for budget races, double approvals and
   cancel-vs-capture, plus a live Sandbox smoke script.
@@ -158,7 +158,7 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 260 passed, 1 skipped (jsdom UI test), no network
+python -m pytest -q                      # 267 passed, 1 skipped (jsdom UI test), no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card

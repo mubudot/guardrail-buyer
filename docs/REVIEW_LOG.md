@@ -100,7 +100,7 @@ publishing Sandbox credentials for judges (see `docs/REQUIREMENTS_CHECK.md` G1/G
 
 Rules and overview re-read (Devpost rules + overview): unchanged. Fresh clone of `76621dd`, README offline block
 verbatim in a new venv: `255 passed, 1 skipped`, server ready, mixed request → cables order $25.98 / keyboard
-approval / gift card refused, spend `reserved 25.98`, CLI run OK. After this round: `260 passed, 1 skipped`.
+approval / gift card refused, spend `reserved 25.98`, CLI run OK. After this round: `267 passed, 1 skipped`.
 
 | ID | Source | Finding | Fix |
 |---|---|---|---|
@@ -116,5 +116,14 @@ approval / gift card refused, spend `reserved 25.98`, CLI run OK. After this rou
 | H2 | Hark | Devpost "Known limitations" paragraph sat inside the Accomplishments list. | Moved below the list; demo-video run added. |
 | H3 | Hark (upgrade) | No short judge path; AG Grid use not summarised for the sponsor prize; no NEAR disclosure. | "For judges, in 3 minutes", "How AG Grid is used" table, "Other projects by the author". |
 
-Note: the demo video's closing card says "256 tests" (true at recording); the suite now has 261. The video
+Note: the demo video's closing card says "256 tests" (true at recording); the suite now has 268. The video
 understates, nothing on screen is false, so it was not re-recorded.
+
+Codex re-verify of the round (`work/` report, not committed): F02/F04/F05/F06/F08/F09 fixed. Follow-ups fixed:
+
+| ID | Finding | Fix |
+|---|---|---|
+| F03b | `requirements.txt` header count still stale. | Updated. |
+| F07b | `error.type` was passed through (sanitised characters only), so a gateway could echo a key in it; secrets shorter than 4 chars were not masked. | `error.type` must be a documented Messages API type, else `unknown_error`; a message containing any configured secret (any length, incl. `PAYPAL_CLIENT_ID`) is withheld entirely (+6 tests). |
+| R1 | Intermittent `database is locked` in `test_concurrent_first_open_migrates_once` (1 of Codex's 2 runs). Reproduced deterministically: SQLite does not apply the busy timeout to the rollback-journal → WAL switch while another connection holds a write lock. | `Store` retries the WAL switch up to the 30 s busy timeout (+1 regression test that fails on the old code). |
+| G1 | README AG Grid table said every Spend-grid row shows use/headroom; only the daily-cap row does. | Wording fixed. |

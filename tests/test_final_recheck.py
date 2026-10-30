@@ -13,11 +13,11 @@ def _raise_with(monkeypatch, response):
 
 
 def test_structured_error_keeps_type_and_redacts_configured_key(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-SECRETSECRETSECRET")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-SECRETSECRETSECRET")
     body = {"type": "error", "error": {"type": "authentication_error",
-                                       "message": "invalid x-api-key sk-ant-api03-SECRETSECRETSECRET"}}
+                                       "message": "invalid x-api-key sk-ant-fake-SECRETSECRETSECRET"}}
     msg = _raise_with(monkeypatch, httpx.Response(401, json=body))
-    assert msg.startswith("Messages API HTTP 401: authentication_error: invalid x-api-key")
+    assert msg.startswith("Messages API HTTP 401: authentication_error (message withheld")
     assert "SECRET" not in msg
 
 
@@ -46,9 +46,9 @@ def test_agent_endpoint_502_carries_only_the_safe_detail(monkeypatch):
     from app.paypal_client import MockPayPal
     from tests.test_review5_fixes import _svc
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-LEAKME-123456789")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-LEAKME-123456789")
     monkeypatch.setattr(httpx, "post", lambda *a, **k: httpx.Response(
-        500, json={"error": {"type": "api_error", "message": "upstream saw sk-ant-LEAKME-123456789"}}))
+        500, json={"error": {"type": "api_error", "message": "upstream saw sk-ant-fake-LEAKME-123456789"}}))
     s = _svc(MockPayPal())
     app = create_app(s, approver_token="t", agent_rate_limit=None)
     app.state.agent = PurchasingAgent(s)
@@ -88,3 +88,44 @@ def test_markdown_relative_links_resolve():
             if not os.path.exists(tgt) or (anc and tgt.endswith(".md") and anc not in anchors(tgt)):
                 broken.append(f"{f}: {url}")
     assert broken == []
+
+
+def test_wal_switch_waits_for_a_concurrent_reader_instead_of_failing(tmp_path):
+    """Intermittent 'database is locked' seen in the concurrent first-open test: SQLite does not apply
+    the busy timeout to the rollback-journal -> WAL switch, so a connection holding a write lock at that
+    moment made Store() fail at once. The switch now retries."""
+    import sqlite3
+    import threading
+    import time
+
+    from app.service import Store
+
+    db = tmp_path / "legacy.db"
+    c = sqlite3.connect(db, isolation_level=None, check_same_thread=False)
+    c.execute("CREATE TABLE t (x)")
+    c.execute("INSERT INTO t VALUES (1)")
+    c.execute("BEGIN IMMEDIATE")                      # another opener mid-migration: RESERVED lock
+    c.execute("INSERT INTO t VALUES (2)")              # on a rollback-journal (legacy) DB
+    threading.Timer(0.3, lambda: c.execute("COMMIT")).start()
+    t0 = time.monotonic()
+    store = Store(str(db))                            # used to raise "database is locked" at once
+    assert store.conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert time.monotonic() - t0 >= 0.2
+    c.close()
+
+
+@pytest.mark.parametrize("etype", ["sk-ant-fake-SECRETSECRET", "pp-secret", "x", "approver-xyz", "<b>"])
+def test_unknown_or_secret_error_type_is_never_echoed(monkeypatch, etype):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-SECRETSECRET")
+    monkeypatch.setenv("PAYPAL_CLIENT_SECRET", "pp-secret")
+    monkeypatch.setenv("APPROVER_TOKEN", "x")                 # short secrets too
+    msg = _raise_with(monkeypatch, httpx.Response(400, json={"error": {"type": etype, "message": "ok"}}))
+    assert msg == "Messages API HTTP 400: unknown_error: ok"
+
+
+def test_short_configured_secret_in_message_withholds_it(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("APPROVER_TOKEN", "q7")
+    body = {"error": {"type": "invalid_request_error", "message": "token q7 rejected"}}
+    msg = _raise_with(monkeypatch, httpx.Response(400, json=body))
+    assert "q7" not in msg and "withheld" in msg

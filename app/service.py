@@ -39,6 +39,7 @@ import os
 import secrets
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -96,8 +97,22 @@ class Store:
         self.conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         if db_path != ":memory:":
-            self.conn.execute("PRAGMA journal_mode=WAL")
+            self._enable_wal()
         self.migrate()
+
+    def _enable_wal(self, timeout: float = 30.0) -> None:
+        """Switching a rollback-journal DB to WAL needs a moment without other connections, and
+        SQLite does not apply the busy timeout to it: several processes/threads opening the same
+        legacy DB at once get an immediate "database is locked". Retry (up to the busy timeout) instead."""
+        deadline = time.monotonic() + timeout          # same budget as the connection's busy timeout
+        while True:
+            try:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
 
     # ---- versioned schema migrations (fix round 7, CODEX_REVIEW_4 N1) ----------
     # The schema version lives in the SQLite header (PRAGMA user_version), which is

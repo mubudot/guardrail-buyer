@@ -202,23 +202,28 @@ def anthropic_post(payload: dict[str, Any], base_url: str | None = None, timeout
 
 
 _SECRETISH = re.compile(r"(sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+|[A-Za-z0-9_-]{40,})")
+# Documented Messages API error types; anything else is reported as unknown_error.
+_ERROR_TYPES = frozenset({"invalid_request_error", "authentication_error", "billing_error", "permission_error",
+                          "not_found_error", "request_too_large", "rate_limit_error", "timeout_error", "api_error",
+                          "overloaded_error"})
 
 
 def _safe_error_detail(r: httpx.Response, key: str | None) -> str:
-    """What an upstream error may show to an anonymous /agent/request caller (HTTP 502): only the
-    Messages API's structured `error.type` and a short, redacted `error.message`, never the raw body
-    (a gateway may echo headers or keys there). Configured secrets and key-like tokens are masked."""
+    """What an upstream error may show to an anonymous /agent/request caller (HTTP 502): only a known
+    Messages API `error.type` and a short `error.message`, never the raw body (a gateway may echo
+    headers or keys there). If the message contains any configured secret it is withheld entirely;
+    otherwise key-like tokens are masked."""
     try:
         err = r.json().get("error") or {}
-        etype, msg = str(err.get("type") or "unknown_error"), str(err.get("message") or "")
+        etype, msg = str(err.get("type") or ""), str(err.get("message") or "")
     except (ValueError, AttributeError):
         return "non-JSON error body (not shown)"
-    for secret in (key, os.environ.get("PAYPAL_CLIENT_SECRET"), os.environ.get("APPROVER_TOKEN"),
-                   os.environ.get("STATE_SECRET")):
-        if secret and len(secret) >= 4:
-            msg = msg.replace(secret, "[redacted]")
+    etype = etype if etype in _ERROR_TYPES else "unknown_error"
+    secrets_ = [v for v in (key, os.environ.get("PAYPAL_CLIENT_SECRET"), os.environ.get("APPROVER_TOKEN"),
+                            os.environ.get("STATE_SECRET"), os.environ.get("PAYPAL_CLIENT_ID")) if v]
+    if any(v in msg for v in secrets_):
+        return f"{etype} (message withheld: it contained a configured secret)"
     msg = _SECRETISH.sub("[redacted]", msg)
-    etype = re.sub(r"[^A-Za-z0-9_.-]", "", etype)[:60] or "unknown_error"
     return f"{etype}: {msg[:200]}" if msg else etype
 
 
