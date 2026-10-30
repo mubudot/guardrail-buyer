@@ -52,6 +52,17 @@ natural-language request
  FastAPI: REST API + AG Grid dashboard at /                        app/main.py, app/static/
 ```
 
+### How AG Grid is used (Community 32.3.3, vendored, no CDN)
+
+The dashboard (`app/static/app.js`) is four AG Grid grids that a finance lead works in, not just tables:
+
+| Grid | What it does with AG Grid |
+|---|---|
+| Pending approvals | `cellRenderer` **Approve / Reject** buttons calling the approver-token API; the agent's justification and the rules hit, with full text in tooltips (`tooltipField`, `tooltipValueGetter`); `getRowId` |
+| Orders | **Pay with PayPal** link or capture id per order (`cellRenderer`), PayPal order id, status badges; item names wrap (`wrapText` + `autoHeight`); `getRowId` so polling updates rows in place instead of redrawing |
+| Spend vs caps | each guardrail with its limit, today's use and headroom (`valueFormatter` for money, `autoSizeStrategy: fitGridWidth`) |
+| Audit | every guardrail decision: `floatingFilter` on every column, a quick-search box (`quickFilterText`), risk colouring (`cellClassRules` / `rowClassRules`: deny red, approval amber, unconfirmed payment orange), **Export CSV** (`exportDataAsCsv` with a `processCellCallback` that neutralises spreadsheet formulas), row click → detail panel with the quote, every rule evaluated and the payment timeline, keyset paging for older rows |
+
 ### Payment flow and spend accounting
 
 1. **Check + reserve atomically.** The policy check and the budget reservation run in one SQLite write

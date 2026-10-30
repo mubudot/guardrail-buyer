@@ -95,3 +95,26 @@ passes). `scripts/ui_smoke_jsdom.cjs` → `UI SMOKE OK`.
 
 Open (not code): demo-video buyer-payment footage + YouTube upload, public GitHub repo + push, decision on
 publishing Sandbox credentials for judges (see `docs/REQUIREMENTS_CHECK.md` G1/G3/G4).
+
+## Final re-check round (2026-10-30, ~09:00–10:00 Asia/Taipei)
+
+Rules and overview re-read (Devpost rules + overview): unchanged. Fresh clone of `76621dd`, README offline block
+verbatim in a new venv: `255 passed, 1 skipped`, server ready, mixed request → cables order $25.98 / keyboard
+approval / gift card refused, spend `reserved 25.98`, CLI run OK. After this round: `260 passed, 1 skipped`.
+
+| ID | Source | Finding | Fix |
+|---|---|---|---|
+| F02 | Codex | Repro step 6 `…/approvals/<APR-id>/approve` fails literally in bash (`<` redirection). | Steps 5–7 now capture `APR_ID` and use quoted URLs; verified: 401 without token, approve → total 114.98. |
+| F03 | Codex | `docs/DEVPOST.md` and `requirements.txt` still said 196 tests. | Updated (261 tests: 260 + 1 jsdom). |
+| F04 | Codex | Devpost testing instructions: after the offline exports, `.env` edits for Claude/Sandbox have no effect. | Added the fresh-shell / `unset` note. |
+| F05 | Codex | README roadmap, video-pipeline sentence and limitations not synced with the recorded Sandbox run. | Synced (two real runs, scene 7 automated only with buyer env vars). |
+| F06 | Codex | 18 broken relative links in `CODEX_REVIEW_5*.md` / `CODEX_REVIEW_UI.md`. | Turned into inline code; new test fails on any broken relative link or anchor in tracked Markdown. |
+| F07 | Codex | Upstream Messages-API error bodies (first 300 chars) reached anonymous `/agent/request` 502 responses. | Only structured `error.type` + short `error.message`, with configured secrets and key-like tokens masked; non-JSON bodies never shown (+4 tests). |
+| F08 | Codex | VIDEO_SCRIPT said buyer credentials are "never written anywhere"; the email appears in the raw recording. | Wording narrowed (password env-only; email blurred in the final cut). The committed screenshot shows only PayPal's generated `sb-…@personal.example.com` test buyer (kept). |
+| F09 | Codex | `FIX_ROUND_7.md` carried an author email line. | Removed (noreply address, not personal). |
+| H1 | Hark | Two docs named the third-party Messages-API gateway host. | Replaced by a generic description in the tree (still in two older commits; history not rewritten, see note). |
+| H2 | Hark | Devpost "Known limitations" paragraph sat inside the Accomplishments list. | Moved below the list; demo-video run added. |
+| H3 | Hark (upgrade) | No short judge path; AG Grid use not summarised for the sponsor prize; no NEAR disclosure. | "For judges, in 3 minutes", "How AG Grid is used" table, "Other projects by the author". |
+
+Note: the demo video's closing card says "256 tests" (true at recording); the suite now has 261. The video
+understates, nothing on screen is false, so it was not re-recorded.
