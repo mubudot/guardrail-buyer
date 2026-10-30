@@ -1,7 +1,7 @@
 # Live Claude smoke test (AI mode, mock PayPal)
 
 - **Date:** 2026-10-30 04:24 Asia/Taipei (2026-10-29 20:24 UTC), fix round 7 working tree (on top of `416e2dd`).
-- **Model:** `claude-sonnet-5-5` via a Messages-API-compatible gateway (`ANTHROPIC_BASE_URL=<your-gateway-url>`;
+- **Model:** `claude-sonnet-5-5` via a Messages-API-compatible gateway (`ANTHROPIC_BASE_URL` set to that gateway;
   auth injected on the wire by the sandbox gateway, so `ANTHROPIC_API_KEY` was left unset; no key or token is in
   this repo or in the transcript).
 - **Config:** `AGENT_MODE=claude MODEL=claude-sonnet-5-5 PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1`, in-memory DB,

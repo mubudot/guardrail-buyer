@@ -6,6 +6,13 @@
 
 ![dashboard](docs/dashboard.png)
 
+**For judges, in 3 minutes:** clone, then paste the [offline block](#no-keys-no-network-copy-paste-offline-block)
+(no AI key, no PayPal account): it runs the test suite, starts the dashboard and sends one mixed request →
+an order to pay, an approval to grant, a refusal. Open the printed URL, enter approver token `demo`, click
+**Pay with PayPal** → **Pay now** and **Approve**. With your own keys the same flow runs on Claude and the
+real PayPal Sandbox ([below](#against-the-real-paypal-sandbox)); a real Sandbox buyer approval → capture is
+documented with ids and screenshots in [`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md).
+
 Letting an AI agent spend money is risky. GuardRail Buyer puts a deterministic
 policy engine between the LLM and the wallet:
 
@@ -130,7 +137,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 255 passed, 1 skipped (jsdom UI test)
+python -m pytest -q                                     # -> 260 passed, 1 skipped (jsdom UI test)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -211,7 +218,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `255 passed, 1 skipped` (no network, no API key needed).
+1. **Run the tests** — `python -m pytest -q` → see `260 passed, 1 skipped` (no network, no API key needed).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -226,11 +233,13 @@ return / cancel links and the mock checkout).
    (**Pay with PayPal**, $25.98 reserved), the keyboard ($89) gets an **approval request**, and the
    gift card is **refused** (blocked merchant + category). See `docs/sample_transcript.json` for a real run.
    Click **Pay with PayPal** → approve → you land back on the dashboard with the order `COMPLETED`.
-5. **See what is waiting for you** — `curl localhost:8000/approvals?status=PENDING` → see the keyboard approval with the agent's justification and the policy reasons.
+5. **See what is waiting for you** — `curl 'localhost:8000/approvals?status=PENDING'` → see the keyboard approval with the agent's justification and the policy reasons.
+   Keep its id for the next step:
+   `APR_ID=$(curl -s 'localhost:8000/approvals?status=PENDING' | python -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')`
 6. **Approve it** — click **Approve** in *Pending approvals*, or
-   `curl -X POST -H 'X-Approver-Token: demo' localhost:8000/approvals/<APR-id>/approve` → a new order
+   `curl -X POST -H 'X-Approver-Token: demo' "localhost:8000/approvals/$APR_ID/approve"` → a new order
    linked to the approval, awaiting the buyer; `GET /spend` shows `total: 114.98`. Without the token → `401`.
-7. **Or reject it** — **Reject** / `POST /approvals/<APR-id>/reject` → status `REJECTED`, no money moves.
+7. **Or reject it** (instead of step 6) — **Reject** / `curl -X POST -H 'X-Approver-Token: demo' "localhost:8000/approvals/$APR_ID/reject"` → status `REJECTED`, no money moves.
 8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`; without a key: `AGENT_MODE=offline python -m app.cli "…"`, sample in `docs/sample_offline_run.txt`). The CLI starts from an empty in-memory ledger each run. `CLI_DB_PATH=<file>` makes it use a database file; in mock mode the CLI must then own that file exclusively (same lock as the server) and exits with code 3 while a mock server uses it, so do **not** point the CLI at a running mock server's database. Sharing a database between CLI and server works only in Sandbox mode.
 9. **Audit every decision** — open the **Audit** tab (or `curl localhost:8000/decisions`) → one row per guardrail decision: the gift card is a red `deny` (rule hit `merchant_blocklist`/`category_allowlist`), the keyboard an amber `approval` (`per_order_cap`), an order whose payment is unconfirmed is highlighted orange. Filter any column, search with the box, **Export CSV**, and click a row → quote, every rule evaluated and the payment timeline (`CREATING → PAYER_ACTION_REQUIRED → CAPTURING → COMPLETED`). The Audit tab says how much of the history it shows ("Showing newest 1000 of N"); **Load older** pages back with the API cursor; it polls only while the tab is visible, and the open detail refreshes with each poll (labelled with its snapshot time). CSV cells that start with `= + - @` (or tab / CR) are prefixed with `'` so spreadsheets do not evaluate them. Headless check without a browser: `node scripts/ui_smoke_jsdom.cjs http://127.0.0.1:8000` (needs `npm i jsdom@24`); `GRB_JSDOM_NODE_PATH=<that node_modules> pytest tests/test_ui_jsdom.py` runs the Audit-tab regressions (skipped without jsdom).
 
@@ -277,8 +286,10 @@ Edit `policy.yaml` (or point `POLICY_PATH` at a `.json` file) and restart. Examp
 `scripts/video/make_demo.sh` rebuilds the demo-video draft reproducibly: Piper TTS narration per scene
 (`scripts/video/scenes.json`, script in `docs/VIDEO_SCRIPT.md`) → app in Sandbox mode → headless
 Chromium (Playwright) drives the dashboard and records the screen → ffmpeg cuts the model's thinking
-time and lays the narration on top → `docs/demo_draft.mp4`. No music. The Sandbox buyer login is the
-one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
+time and lays the narration on top → `docs/demo_draft.mp4`. No music. The Sandbox buyer login (scene 7) is
+recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_EMAIL` /
+`SANDBOX_BUYER_PASSWORD` (environment only); without them scene 7 is a labelled placeholder card
+(see `docs/VIDEO_SCRIPT.md`).
 
 ## REST API
 
@@ -332,11 +343,11 @@ one step it does not automate (see `docs/VIDEO_SCRIPT.md`, scene 7).
 - [x] Buyer-approval round trip (create → approve → return → capture), reservations, cancel / expiry — tested with the mock and a wire-format test of the Sandbox client
 - [x] Live run against the PayPal Sandbox: orders created, live status, capture-before-approval handled, cancel (`scripts/sandbox_smoke.py`)
 - [x] Full buyer payment with a Sandbox personal test account, verified by hand ([`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md))
-- [ ] The same payment recorded as video footage for the demo video
+- [x] A second real Sandbox buyer payment recorded as footage for the demo video ("Second run" in [`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md))
 - [x] AG Grid dashboard for orders, approvals and spend, approver token
 - [x] AG Grid **Audit** tab: every guardrail decision with column filters, quick search, risk highlighting, CSV export and a detail panel (quote, rules evaluated, payment timeline)
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
-- [~] Demo video: draft pipeline done; real Sandbox buyer-approval clip pending
+- [x] Demo video: final cut 2:23 with the real Sandbox buyer approval (YouTube link on the Devpost page)
 
 ## Known limitations
 
@@ -393,8 +404,9 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
   quantity or item selection; it is only screened against a short list of condition/negation words (a
   denylist, so it is not a complete guarantee that unusual wording there is meaningless to a human
   reader). Verb, quantity and item are validated positively.
-- **The real Sandbox buyer approval → capture loop was verified once by hand (2026-10-30)**: one order, a single
-  Sandbox personal test buyer, the redirect through a tunnel ([`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md)). The
+- **The real Sandbox buyer approval → capture loop was run for real on 2026-10-30, not in CI**: a first run by
+  hand (redirect through a tunnel) and the recorded demo-video run, both with one Sandbox personal test buyer
+  ([`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md)). The
   automated tests still exercise this loop only against the mock and a wire-format fake of the Sandbox API.
 
 ## AI tools used
@@ -404,6 +416,12 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
 - **Piper TTS** (offline, open source; voice trained on LibriTTS-R, CC BY 4.0) generated the demo-video narration.
 - **Hark** (an AI agent, built on Claude) was used as a coding assistant to scaffold the backend, guardrail engine, tests and this README. All code was reviewed and tested by running the test suite and live agent calls.
 - **OpenAI Codex (CLI)** was used as an independent code reviewer; findings and fixes are logged in `docs/CODEX_REVIEW_*.md` and [`docs/REVIEW_LOG.md`](docs/REVIEW_LOG.md).
+
+## Other projects by the author
+
+Disclosed for transparency: **near-agent-spend-guard** (a Rust NEAR smart contract that enforces spending
+limits for AI agents), entered in NEAR HACKATHON, not in this hackathon. It is an independent project and
+shares no code with this repository.
 
 ## License
 

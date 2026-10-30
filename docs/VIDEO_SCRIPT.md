@@ -7,7 +7,7 @@ Sandbox checkout (the sponsor's product), AG Grid (sponsor), Claude (named as th
 The video is produced by `scripts/video/make_demo.sh` (TTS → app in Sandbox mode with Claude → headless
 Chromium recording via Playwright → ffmpeg). Output: `docs/demo_draft.mp4` (not committed). Narration text lives
 in `scripts/video/scenes.json`; keep it in sync with this file. With `SANDBOX_BUYER_EMAIL` and
-`SANDBOX_BUYER_PASSWORD` set (a Sandbox *personal* test account, env vars only, never written anywhere), the
+`SANDBOX_BUYER_PASSWORD` set (a Sandbox *personal* test account; the password is read from the environment only and never written anywhere; the buyer email is visible in the raw screen recording, which stays outside the repo, and is blurred in the final cut), the
 recorder also logs in on the real Sandbox checkout, clicks **Pay** and follows the redirect back, so scene 7 is real
 footage; the buyer's email is blurred by `assemble.py`. Without them, scene 7 is a labelled placeholder card.
 

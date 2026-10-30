@@ -66,9 +66,10 @@ click any row to see the quote, each rule evaluated and the payment timeline.
   quote, every rule evaluated and the payment's status timeline).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 196 pytest tests (guardrails, payment flow, reservations/expiry, API, agent loop with a
-  scripted fake LLM, offline mode, and thread/barrier concurrency tests for budget races, double
-  approvals and cancel-vs-capture) plus a live Sandbox smoke script.
+- **Tests:** 261 pytest tests (260 run everywhere; 1 headless-browser UI test needs jsdom): guardrails,
+  payment flow, reservations/expiry, ambiguous PayPal outcomes and reconciliation, API, agent loop with a
+  scripted fake LLM, offline mode, thread/barrier concurrency tests for budget races, double approvals and
+  cancel-vs-capture, plus a live Sandbox smoke script.
 
 ## Challenges we ran into
 
@@ -99,6 +100,10 @@ click any row to see the quote, each rule evaluated and the payment timeline.
   tools; it never chooses prices or merchants (they come from the server catalog), cannot escalate a
   DENY, cannot reuse an approval or change its amount, and cannot get around the caps by firing
   requests in parallel or by splitting one item into several orders within a request.
+- The demo video shows a second real run end to end (order `ORD-F79F379F1E` → PayPal capture
+  `14579671MH105231J`, `COMPLETED`): the Sandbox buyer logs in and pays on PayPal on screen.
+- Judges can run everything locally in a few minutes, with or without an AI key and with or without a
+  PayPal Sandbox app (a local mock covers the PayPal side).
 
 **Known limitations (honest scope):** authentication is local-demo scope (one shared approver token that
 fails closed when unset, a signed cancel callback and a simple per-IP agent rate limit, but no
@@ -106,8 +111,6 @@ per-requester identity or ownership, so don't expose it publicly); catalog merch
 payments go to the single Sandbox merchant of the configured app; spend counts on the day it was reserved;
 policy changes don't revoke orders already created; split-order aggregation covers only the same item
 from the same merchant within one request; mock PayPal state is in memory (one mock server per database, enforced by a lock file). Details in the README.
-- Judges can run everything locally in a few minutes, with or without an AI key and with or without a
-  PayPal Sandbox app (a local mock covers the PayPal side).
 
 ## What we learned
 
@@ -155,13 +158,16 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 196 passed, no network
+python -m pytest -q                      # 260 passed, 1 skipped (jsdom UI test), no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card
 # → cables: order + "Pay with PayPal" (local mock checkout) · keyboard: approval request · gift card: refused
 ```
 
+- **Switching modes:** the block above exports `AGENT_MODE`, `PAYPAL_MODE` and `GRB_NO_DOTENV=1`, which
+  override and disable `.env`. Stop the server and open a **new shell** before the two options below
+  (or run the `unset …` line from the README's *Switching modes*).
 - **With Claude:** put an Anthropic API key in `.env` (`ANTHROPIC_API_KEY`) and leave `AGENT_MODE`
   unset; free-form requests then work.
 - **With the real PayPal Sandbox:** create a free Sandbox REST app at developer.paypal.com (Apps &

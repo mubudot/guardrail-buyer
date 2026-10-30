@@ -1,7 +1,7 @@
 # Fix round 7 — response to CODEX_REVIEW_4
 
 Base `416e2dd` → fix commit `d5a9d4c` (+ this report). Local only: nothing pushed, no remote, no
-publication, no PayPal call (live or Sandbox). Author `mubudot <349922873+mubudot@users.noreply.github.com>`.
+publication, no PayPal call (live or Sandbox).
 `docs/CODEX_REVIEW_4.md` is committed in `d5a9d4c`.
 
 **Tests: 196 → 214** (213 pass + 1 jsdom UI test that is skipped without node/jsdom; 214 pass with
@@ -94,7 +94,7 @@ numeric); headers go through the same function. jsdom test with a catalog mercha
 
 ## Live Claude smoke (AI mode, mock PayPal)
 
-One run, no retry: `AGENT_MODE=claude MODEL=claude-sonnet-5-5 ANTHROPIC_BASE_URL=<your-gateway-url>
+One run, no retry: `AGENT_MODE=claude MODEL=claude-sonnet-5-5 ANTHROPIC_BASE_URL=<Messages-API-compatible gateway>
 PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1`, auth injected by the gateway (`ANTHROPIC_API_KEY` unset). Request
 "Buy 2 USB-C cables, a mechanical keyboard and a $100 gift card for the team." → 4 turns, 12.5 s,
 8,763 in / 377 out tokens; cables ALLOW → order $25.98 reserved awaiting payer; keyboard NEEDS_APPROVAL → approval
