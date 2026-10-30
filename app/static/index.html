@@ -40,6 +40,7 @@
   <nav class="tabs" role="tablist">
     <button class="tab active" role="tab" id="tab-ops" data-view="view-ops" aria-selected="true">Operations</button>
     <button class="tab" role="tab" id="tab-audit" data-view="view-audit" aria-selected="false">Audit <span id="audit-count" class="count"></span></button>
+    <button class="tab" role="tab" id="tab-policy" data-view="view-policy" aria-selected="false">Policy &amp; spend</button>
   </nav>
 
   <div id="view-ops" class="view">
@@ -82,8 +83,35 @@
     </div>
   </section>
   </div>
+
+  <div id="view-policy" class="view" hidden>
+  <section class="card">
+    <div class="row"><h2>Spend over time</h2><span class="hint" id="chart-note">Captured vs reserved per day (policy timezone) against the daily cap</span></div>
+    <div class="toolbar"><label class="hint">Days
+      <select id="chart-days"><option>7</option><option selected>14</option><option>30</option><option>90</option></select></label></div>
+    <div id="spend-chart" class="chart"></div>
+  </section>
+
+  <section class="card">
+    <div class="row"><h2>Spend policy</h2><span class="hint">Double-click a value to edit · the server validates every change · owner token required</span></div>
+    <div class="toolbar">
+      <label class="hint">Owner token <input id="owner-token" type="password" placeholder="blank = approver token" autocomplete="off"></label>
+      <span id="policy-dirty" class="hint" aria-live="polite"></span>
+      <button id="policy-discard" class="btn" type="button" disabled>Discard</button>
+      <button id="policy-save" class="btn primary" type="button" disabled>Save policy</button>
+    </div>
+    <div class="policy-grids">
+      <div><h3>Caps</h3><div id="policy-caps" class="ag-theme-quartz grid tiny"></div></div>
+      <div><h3>Merchants</h3><div id="policy-merchants" class="ag-theme-quartz grid policy-list"></div></div>
+      <div><h3>Categories</h3><div id="policy-categories" class="ag-theme-quartz grid policy-list"></div></div>
+    </div>
+    <h3>Change history</h3>
+    <div id="policy-history" class="ag-theme-quartz grid tiny"></div>
+  </section>
+  </div>
 </main>
 <div id="toast" class="toast" hidden></div>
 <script src="/static/app.js"></script>
+<script src="/static/policy.js"></script>
 </body>
 </html>

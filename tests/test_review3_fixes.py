@@ -322,7 +322,7 @@ def test_dashboard_references_resolve(service):
     c = _client(service)
     html = c.get("/").text
     refs = re.findall(r'(?:src|href)="(/static/[^"]+)"', html)
-    assert len(refs) == 5 and all(c.get(u).status_code == 200 for u in refs)
+    assert len(refs) == 6 and all(c.get(u).status_code == 200 for u in refs)  # +policy.js (Policy tab)
     for needed in ('id="audit"', 'id="audit-search"', 'id="audit-csv"', 'id="audit-detail"', 'id="tab-audit"'):
         assert needed in html
     js = c.get("/static/app.js").text

@@ -317,6 +317,9 @@ class BuyerService:
         self._clock = clock or (lambda: datetime.now(ZoneInfo("UTC")))
         self.approval_ttl = approval_ttl or timedelta(
             minutes=int(os.environ.get("PAYPAL_APPROVAL_TTL_MIN", "180")))
+        self.base_policy = policy       # from policy.yaml; an owner edit (PUT /policy) overrides it
+        self._policy_raw: str | None = None
+        self.sync_policy()
 
     def _ts(self, dt: datetime | None = None) -> str:
         return (dt or self._clock()).astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds")
@@ -364,6 +367,7 @@ class BuyerService:
 
     # ---- read-only check ----------------------------------------------
     def check(self, product_id: str, quantity: int = 1, request_id: str | None = None) -> dict[str, Any]:
+        self.sync_policy()
         p, req = self._line(product_id, quantity)
         spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
         d = evaluate(self.policy, req, spent, prior)
@@ -960,6 +964,7 @@ class BuyerService:
 
     def spend_summary(self) -> dict[str, Any]:
         """Today's spend split into captured vs reserved, against the caps."""
+        self.sync_policy()
         self.expire_stale()
         day, cur = self._today(), self.policy.currency
         captured = reserved = Decimal("0")
@@ -983,6 +988,121 @@ class BuyerService:
                 "hard_max_per_order": str(self.policy.hard_max_per_order),
                 "needs_reconciliation": unconfirmed}
 
+    # ---- owner-editable policy (stored in the DB, shared by every process) ----------
+    POLICY_EDITABLE = ("per_order_cap", "daily_cap", "hard_max_per_order", "allowed_categories",
+                       "allowed_merchants", "blocked_merchants")
+    POLICY_MAX_AMOUNT = Decimal("1000000")
+    POLICY_HISTORY_MAX = 200
+
+    def sync_policy(self) -> Policy:
+        """Adopt the owner's policy override if another call or process changed it. One
+        indexed read; called at the start of every policy decision."""
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT value FROM meta WHERE key='policy_override'").fetchone()
+        raw = row[0] if row else None
+        if raw != self._policy_raw:
+            self.policy = Policy.from_dict(json.loads(raw)) if raw else self.base_policy
+            self._policy_raw = raw
+        return self.policy
+
+    @classmethod
+    def validate_policy_update(cls, current: Policy, body: Any) -> Policy:
+        """Strict validation of an owner edit. Only the caps and the lists are editable;
+        currency and timezone stay as configured. Raises ValueError with a readable reason."""
+        if not isinstance(body, dict) or not body:
+            raise ValueError("send a JSON object with the fields to change")
+        extra = sorted(set(body) - set(cls.POLICY_EDITABLE))
+        if extra:
+            raise ValueError(f"not editable: {', '.join(extra)[:120]} (editable: {', '.join(cls.POLICY_EDITABLE)})")
+        merged = current.to_dict()
+        for key in ("per_order_cap", "daily_cap", "hard_max_per_order"):
+            if key not in body:
+                continue
+            v = body[key]
+            if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+                raise ValueError(f"{key} must be an amount like \"50\" or \"49.99\"")
+            s = str(v).strip()
+            if not re.fullmatch(r"[0-9]{1,7}(\.[0-9]{1,2})?", s):
+                raise ValueError(f"{key} must be a positive amount with at most 2 decimals, got {s[:20]!r}")
+            amt = Decimal(s)
+            if amt <= 0 or amt > cls.POLICY_MAX_AMOUNT:
+                raise ValueError(f"{key} must be between 0.01 and {cls.POLICY_MAX_AMOUNT}")
+            merged[key] = str(money(amt))
+        for key in ("allowed_categories", "allowed_merchants", "blocked_merchants"):
+            if key not in body:
+                continue
+            v = body[key]
+            if not isinstance(v, list) or len(v) > 50 or not all(isinstance(x, str) for x in v):
+                raise ValueError(f"{key} must be a list of at most 50 names")
+            names = [x.strip().lower() for x in v]
+            if any(not n or len(n) > 80 or any(ord(ch) < 32 for ch in n) for n in names):
+                raise ValueError(f"{key}: every name must be 1-80 printable characters")
+            if len(set(names)) != len(names):
+                raise ValueError(f"{key} contains duplicates")
+            merged[key] = names
+        for key in ("allowed_categories", "allowed_merchants"):
+            if not merged[key]:  # the engine reads an empty allowlist as "anything goes"
+                raise ValueError(f"{key} cannot be empty (an empty allowlist would allow everything)")
+        both = sorted(set(merged["allowed_merchants"]) & set(merged["blocked_merchants"]))
+        if both:
+            raise ValueError(f"merchant(s) both allowed and blocked: {', '.join(both)[:120]}")
+        if money(merged["per_order_cap"]) > money(merged["daily_cap"]):
+            raise ValueError("per_order_cap must not exceed daily_cap")
+        return Policy.from_dict(merged)  # also checks hard_max_per_order >= per_order_cap
+
+    def update_policy(self, body: Any, actor: str = "owner") -> dict[str, Any]:
+        """Apply an owner edit atomically (validated against the policy current inside the
+        write transaction) and append it to the policy history. Orders already created are
+        not revoked; pending approvals are re-checked against the deny rules when approved."""
+        with self.store.tx() as c:
+            current = self.sync_policy()
+            new = self.validate_policy_update(current, body)
+            before, after = current.to_dict(), new.to_dict()
+            changed = {k: {"from": before[k], "to": after[k]} for k in after if before[k] != after[k]}
+            if not changed:
+                return {"result": "UNCHANGED", "policy": after}
+            raw = json.dumps(after, sort_keys=True)
+            c.execute("INSERT INTO meta(key, value) VALUES ('policy_override', ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (raw,))
+            row = c.execute("SELECT value FROM meta WHERE key='policy_history'").fetchone()
+            hist = json.loads(row[0]) if row else []
+            entry = {"id": "POL-" + uuid.uuid4().hex[:8].upper(), "at": self._ts(), "actor": actor,
+                     "changes": changed}
+            hist = ([entry] + hist)[:self.POLICY_HISTORY_MAX]
+            c.execute("INSERT INTO meta(key, value) VALUES ('policy_history', ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(hist),))
+            self.policy, self._policy_raw = new, raw
+        return {"result": "UPDATED", "policy": after, "change": entry}
+
+    def policy_history(self) -> list[dict[str, Any]]:
+        with self.store.lock:
+            row = self.store.conn.execute("SELECT value FROM meta WHERE key='policy_history'").fetchone()
+        return json.loads(row[0]) if row else []
+
+    def spend_history(self, days: int = 14) -> dict[str, Any]:
+        """Daily spend for the last `days` days (policy timezone, today last), split into
+        captured and still-reserved amounts, with the current caps for reference."""
+        self.sync_policy()
+        self.expire_stale()
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 90:
+            raise ValueError("days must be between 1 and 90")
+        today = datetime.fromisoformat(self._today()).date()
+        span = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+        rows = {d: {"captured": Decimal("0"), "reserved": Decimal("0"), "orders": 0} for d in span}
+        cur = self.policy.currency
+        for d, cents, c, ref in self.ledger.entries():
+            if d not in rows or c != cur:
+                continue
+            o = self.store.get("orders", ref) if ref else None
+            key = "reserved" if o and o["status"] in RESERVED_STATUSES else "captured"
+            rows[d][key] += Decimal(cents) / 100
+            rows[d]["orders"] += 1
+        return {"currency": cur, "daily_cap": str(self.policy.daily_cap),
+                "per_order_cap": str(self.policy.per_order_cap),
+                "days": [{"day": d, "captured": str(money(r["captured"])), "reserved": str(money(r["reserved"])),
+                          "total": str(money(r["captured"] + r["reserved"])), "orders": r["orders"]}
+                         for d, r in rows.items()]}
+
     @staticmethod
     def _result(order: dict[str, Any]) -> str:
         st = order["status"]
@@ -997,6 +1117,7 @@ class BuyerService:
     def place_order(self, product_id: str, quantity: int = 1, request_id: str | None = None) -> dict[str, Any]:
         p, req = self._line(product_id, quantity)
         with self.store.tx():  # check + reserve atomically, before any PayPal I/O (B1)
+            self.sync_policy()
             spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
             d = evaluate(self.policy, req, spent, prior)
             rules = explain_rules(self.policy, req, spent, prior)
@@ -1014,6 +1135,7 @@ class BuyerService:
 
     def request_approval(self, product_id: str, quantity: int, justification: str,
                          request_id: str | None = None) -> dict[str, Any]:
+        self.sync_policy()
         p, req = self._line(product_id, quantity)
         spent, prior = self.spent_today(), self._related_prior(request_id, p["id"], p["merchant"])
         d = evaluate(self.policy, req, spent, prior)
@@ -1041,6 +1163,7 @@ class BuyerService:
         same transaction that creates its single order and reservation. A repeated call
         returns the existing order. A changed quote (B5) or a deny rule refuses."""
         with self.store.tx() as c:
+            self.sync_policy()
             a = self.store.get("approvals", approval_id)
             if a is None:
                 raise KeyError(approval_id)

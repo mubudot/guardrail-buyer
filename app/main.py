@@ -127,6 +127,10 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
             log.warning("APPROVER_TOKEN not set: approve/reject/cancel are REFUSED (503). "
                         "Set APPROVER_TOKEN, or DEMO_MODE=1 for an open local demo.")
     approver_mode = "token" if token else ("open-demo" if demo else "disabled")
+    # Policy edits need the owner token (POLICY_OWNER_TOKEN; falls back to APPROVER_TOKEN when unset).
+    owner_token = os.environ.get("POLICY_OWNER_TOKEN", "") or token
+    owner_mode = ("owner-token" if os.environ.get("POLICY_OWNER_TOKEN") else "approver-token") if owner_token \
+        else ("open-demo" if demo else "disabled")
 
     def rate_limited(request: Request):
         if limiter is None:
@@ -158,6 +162,15 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
         if not hmac.compare_digest(given.encode(), token.encode()):
             raise HTTPException(401, "approver token required (X-Approver-Token header)")
 
+    def require_owner(x_owner_token: str | None = Header(default=None)):
+        if not owner_token:
+            if demo:
+                return
+            raise HTTPException(503, "no POLICY_OWNER_TOKEN / APPROVER_TOKEN configured; policy editing is "
+                                     "disabled (or set DEMO_MODE=1 for an open local demo)")
+        if not hmac.compare_digest((x_owner_token or "").encode(), owner_token.encode()):
+            raise HTTPException(401, "policy owner token required (X-Owner-Token header)")
+
     # ---- dashboard -----------------------------------------------------
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
@@ -170,18 +183,39 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
     def health():
         return {"ok": True, "paypal": svc.paypal.name, "model": app.state.agent.model,
                 "agent_mode": "offline" if isinstance(app.state.agent, OfflineAgent) else "claude",
-                "approver_auth": bool(token), "approver_mode": approver_mode,
+                "approver_auth": bool(token), "approver_mode": approver_mode, "policy_owner_mode": owner_mode,
                 "agent_rate_limit": f"{limiter.limit}/{limiter.per:g}s" if limiter else None,
                 "tools_rate_limit": f"{tools_limiter.limit}/{tools_limiter.per:g}s" if tools_limiter else None,
                 "instance": os.environ.get("GRB_INSTANCE")}
 
     @app.get("/policy")
     def get_policy():
-        return {**svc.policy.to_dict(), "spent_today": str(svc.spent_today()), "day": svc._today()}
+        return {**svc.sync_policy().to_dict(), "spent_today": str(svc.spent_today()), "day": svc._today()}
+
+    @app.put("/policy", dependencies=[Depends(require_owner)])
+    def put_policy(body: dict):
+        """Owner edit of the caps / allowlists (X-Owner-Token). Validated server-side; only
+        per_order_cap, daily_cap, hard_max_per_order, allowed_categories, allowed_merchants and
+        blocked_merchants are editable. Invalid -> 422 with the reason; nothing changes."""
+        try:
+            return svc.update_policy(body)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.get("/policy/history")
+    def get_policy_history():
+        return svc.policy_history()
 
     @app.get("/spend")
     def get_spend():
         return svc.spend_summary()
+
+    @app.get("/spend/history")
+    def get_spend_history(days: int = 14):
+        try:
+            return svc.spend_history(days)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
 
     @app.get("/catalog")
     def get_catalog(q: str = "", category: str | None = None):
