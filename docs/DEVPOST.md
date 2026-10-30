@@ -191,7 +191,7 @@ python · fastapi · sqlite · paypal-orders-api (v2, Sandbox) · anthropic-clau
 Everything runs locally; no account is needed for the default mode.
 
 ```bash
-git clone <GITHUB_URL> && cd paypal-guardrail-buyer
+git clone <GITHUB_URL> paypal-guardrail-buyer && cd paypal-guardrail-buyer
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 

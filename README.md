@@ -378,9 +378,9 @@ The agent gets seven tools and nothing else:
   coercion): an extra `price`, `merchant`, `amount` or `payee` is refused (`INVALID_ARGUMENTS`), not ignored.
 - There is **no approve, reject, cancel or capture tool**. Approvals need the approver token in the
   dashboard; the buyer still confirms every payment on PayPal.
-- The MCP process never holds secrets. In **remote mode** (recommended) it only forwards calls to the
+- The MCP process drops the app's credentials. In **remote mode** (recommended) it only forwards calls to the
   running GuardRail server (`POST /tools/{name}`), which holds the PayPal credentials. At start it removes
-  `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ACCESS_TOKEN`, `APPROVER_TOKEN` and `STATE_SECRET`
+  `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ACCESS_TOKEN`, `APPROVER_TOKEN`, `POLICY_OWNER_TOKEN` and `STATE_SECRET`
   from its own environment, and results are reduced to public order fields (no signed cancel state).
 - Splitting doesn't help: every order an external agent places is grouped server-side per policy day, so
   same-SKU orders at the same merchant count as one purchase for the per-order cap and the hard maximum,
