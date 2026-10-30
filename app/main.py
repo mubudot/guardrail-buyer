@@ -28,9 +28,16 @@ from .offline_agent import OfflineAgent, make_agent  # noqa: E402
 from .guardrails import Policy  # noqa: E402
 from .paypal_client import MockPayPal, PayPalError, make_client  # noqa: E402
 from .service import BuyerService, Catalog, MockLockError  # noqa: E402
+from .tool_gateway import TOOL_NAMES, TOOL_SPECS, GuardedTools  # noqa: E402
 
 log = logging.getLogger("guardrail")
 STATIC = ROOT / "app" / "static"
+
+
+class ToolCall(BaseModel):
+    """One guarded tool call from an external agent (the MCP server in remote mode)."""
+    arguments: dict = Field(default_factory=dict)
+    session_id: str | None = Field(default=None, max_length=64)
 
 
 class AgentRequest(BaseModel):
@@ -49,7 +56,7 @@ class ConfigError(ValueError):
     """Invalid startup configuration (fails fast instead of crashing requests later)."""
 
 
-def parse_rate_limit(value: str | None) -> tuple[int, float] | None:
+def parse_rate_limit(value: str | None, name: str = "AGENT_RATE_LIMIT") -> tuple[int, float] | None:
     """"N/SECONDS" (e.g. "20/60") -> (N, SECONDS); "N" alone means per 60 s; "off"
     (or "none", or a bare "0") disables. N and SECONDS must be positive whole numbers;
     anything else raises ConfigError at startup (fix round 6, CODEX_REVIEW_3 #4)."""
@@ -61,7 +68,7 @@ def parse_rate_limit(value: str | None) -> tuple[int, float] | None:
     n, per = n.strip(), per.strip()
     if not re.fullmatch(r"[0-9]{1,9}", n) or (sep and not re.fullmatch(r"[0-9]{1,9}", per)) \
             or int(n) < 1 or (sep and int(per) < 1):
-        raise ConfigError(f"AGENT_RATE_LIMIT={raw!r} is invalid: use N/SECONDS with positive whole "
+        raise ConfigError(f"{name}={raw!r} is invalid: use N/SECONDS with positive whole "
                           f"numbers (e.g. 20/60), or 'off' to disable")
     return int(n), float(int(per) if sep else 60)
 
@@ -93,12 +100,16 @@ class RateLimiter:
 
 def create_app(service: BuyerService | None = None, agent: PurchasingAgent | None = None,
                approver_token: str | None = None, demo_mode: bool | None = None,
-               agent_rate_limit: tuple[int, float] | None | str = "env") -> FastAPI:
+               agent_rate_limit: tuple[int, float] | None | str = "env",
+               tools_rate_limit: tuple[int, float] | None | str = "env") -> FastAPI:
     app = FastAPI(title="GuardRail Buyer", version="0.4.0",
                   description="AI purchasing agent with PayPal spend guardrails (Sandbox)")
     # validate configuration before touching the database (fail fast at startup)
     limit = parse_rate_limit(os.environ.get("AGENT_RATE_LIMIT")) if agent_rate_limit == "env" else agent_rate_limit
     limiter = RateLimiter(*limit) if limit else None
+    tools_limit = parse_rate_limit(os.environ.get("TOOLS_RATE_LIMIT", "120/60"), "TOOLS_RATE_LIMIT") \
+        if tools_rate_limit == "env" else tools_rate_limit
+    tools_limiter = RateLimiter(*tools_limit) if tools_limit else None
     svc = service or build_service()
     app.state.service = svc
     # Mock mode is single-process (N3): take the exclusive DB lock first (fails fast if
@@ -124,6 +135,15 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
         if wait is not None:
             raise HTTPException(429, f"rate limit: at most {limiter.limit} agent requests per "
                                      f"{limiter.per:g}s per client", headers={"Retry-After": str(int(wait) + 1)})
+
+    def tools_rate_limited(request: Request):
+        if tools_limiter is None:
+            return
+        wait = tools_limiter.check(request.client.host if request.client else "unknown")
+        if wait is not None:
+            raise HTTPException(429, f"rate limit: at most {tools_limiter.limit} tool calls per "
+                                     f"{tools_limiter.per:g}s per client",
+                                headers={"Retry-After": str(int(wait) + 1)})
 
     def require_approver(x_approver_token: str | None = Header(default=None),
                          authorization: str | None = Header(default=None)):
@@ -152,6 +172,7 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
                 "agent_mode": "offline" if isinstance(app.state.agent, OfflineAgent) else "claude",
                 "approver_auth": bool(token), "approver_mode": approver_mode,
                 "agent_rate_limit": f"{limiter.limit}/{limiter.per:g}s" if limiter else None,
+                "tools_rate_limit": f"{tools_limiter.limit}/{tools_limiter.per:g}s" if tools_limiter else None,
                 "instance": os.environ.get("GRB_INSTANCE")}
 
     @app.get("/policy")
@@ -269,6 +290,24 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
             raise HTTPException(409, f"order {order_id} is {out['status']}; only orders awaiting "
                                      "payer approval can be cancelled")
         return out
+
+    # ---- guarded tools for external agents (MCP server, remote mode) ---------
+    tools = GuardedTools(svc)
+
+    @app.get("/tools")
+    def list_tools():
+        """The guarded tool set (same schemas the MCP server publishes). There is no
+        approve / capture / cancel tool: those stay with a human and the approver token."""
+        return {"tools": TOOL_SPECS}
+
+    @app.post("/tools/{name}", dependencies=[Depends(tools_rate_limited)])
+    def call_tool(name: str, body: ToolCall):
+        """Run one guarded tool through the server-side policy gate. Policy outcomes
+        (DENIED, NEEDS_APPROVAL) are results (200, ok=true); invalid arguments, unknown
+        ids and refusals are ok=false with an error. Unknown tool -> 404."""
+        if name not in TOOL_NAMES:
+            raise HTTPException(404, f"unknown tool {name}")
+        return tools.call(name, body.arguments, body.session_id)
 
     # ---- PayPal buyer round trip ---------------------------------------
     # PayPal redirects the buyer to return_url?token=<paypal order id>&PayerID=...
