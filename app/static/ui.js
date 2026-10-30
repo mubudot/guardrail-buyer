@@ -44,10 +44,19 @@ const statusCell = (p) => p.value
   ? `<span class="st ${escapeHtml(p.value)} tone-${toneOf(p.value)}">${escapeHtml(statusLabel(p.value))}</span>` : "";
 const statusPill = (v) => el("span", {class: `st ${v} tone-${toneOf(v)}`}, statusLabel(v));
 
-// PayPal checkout links come from the server; only http(s) URLs are ever opened or linked
+// PayPal checkout links come from the server. Only a real PayPal checkout (https, paypal.com or a
+// subdomain such as www.sandbox.paypal.com) or this app's own mock checkout page (same origin or a
+// loopback host, path /paypal/mock-checkout) is ever linked or opened; anything else gives null.
+const LOOPBACK = ["localhost", "127.0.0.1", "[::1]"];
 function safeUrl(u) {
-  try { const x = new URL(String(u), location.href); return ["https:", "http:"].includes(x.protocol) ? x.href : null; }
-  catch (e) { return null; }
+  if (typeof u !== "string" || !u.trim()) return null;
+  let x;
+  try { x = new URL(u.trim(), location.href); } catch (e) { return null; }
+  if (x.username || x.password) return null;
+  const paypal = x.protocol === "https:" && (x.hostname === "paypal.com" || x.hostname.endsWith(".paypal.com"));
+  const mock = ["https:", "http:"].includes(x.protocol) && x.pathname === "/paypal/mock-checkout"
+    && (x.origin === location.origin || LOOPBACK.includes(x.hostname));
+  return paypal || mock ? x.href : null;
 }
 
 /* ---------- connection banner (error state) ---------- */
@@ -192,12 +201,42 @@ function confirmDialog({title, intro = "", rows = [], notes = [], confirmLabel =
 
 /* ---------- agent answer ---------- */
 const ORDER_TOOLS = ["create_order", "request_approval"];
-// One line per purchase outcome (the last order/approval call per product), then the full tool
-// trace in a collapsed disclosure, so the answer does not push the dashboard out of view.
+// Results that end a purchase attempt; any other order-tool result (NEEDS_APPROVAL from create_order,
+// NOT_NEEDED, an error) is an intermediate step that the next call for the same item replaces.
+const FINAL_RESULTS = ["ORDER_PLACED", "AWAITING_PAYER_APPROVAL", "PAYMENT_UNCONFIRMED", "FAILED",
+                       "APPROVAL_REQUESTED", "DENIED", "DENIED_BY_POLICY"];
+// One line per purchase attempt, then the full tool trace in a collapsed disclosure, so the answer
+// does not push the dashboard out of view. An attempt is keyed by product and quantity: a policy
+// dry-run that was denied (e.g. a gift card) is listed even when no order call followed, and later
+// calls for the same item replace an open attempt, but two finished purchases of the same product
+// (2 cables now, 4 cables for approval) stay two lines.
+function agentOutcomes(transcript) {
+  const tools = transcript.filter((x) => x.role === "tool");
+  const items = [];
+  const openFor = (key) => {
+    for (let i = items.length - 1; i >= 0; i--) if (items[i].key === key) return items[i].open ? items[i] : null;
+    return null;
+  };
+  for (const s of tools) {
+    const inp = s.input || {}, o = s.output || {};
+    if (!inp.product_id) continue;
+    const key = `${inp.product_id}|${Number(inp.quantity) || 1}`;
+    if (s.name === "check_policy") {
+      if (o.verdict !== "DENY") continue;            // allowed / needs-approval dry runs lead to an order call
+      const cur = openFor(key);
+      if (cur) Object.assign(cur, {s, open: true});
+      else items.push({key, s, open: true});         // a refusal stays listed until an order call replaces it
+    } else if (ORDER_TOOLS.includes(s.name)) {
+      const open = !FINAL_RESULTS.includes(o.result);
+      const cur = openFor(key);
+      if (cur) Object.assign(cur, {s, open});
+      else items.push({key, s, open});
+    }
+  }
+  return {tools, items};
+}
 function renderAgentAnswer(r) {
-  const tools = r.transcript.filter((x) => x.role === "tool");
-  const last = new Map();
-  for (const s of tools) if (ORDER_TOOLS.includes(s.name) && s.input && s.input.product_id) last.set(s.input.product_id, s);
+  const {tools, items} = agentOutcomes(r.transcript);
   const names = new Map();  // product id -> name, from catalog searches and policy checks
   for (const s of tools) {
     const o = s.output || {};
@@ -205,19 +244,22 @@ function renderAgentAnswer(r) {
     if (o.product_id && o.product_name) names.set(o.product_id, o.product_name);
   }
   const outcomes = el("ul", {class: "outcomes"});
-  for (const s of last.values()) {
+  for (const {s} of items) {
     const o = s.output || {}, ord = o.order || {};
     const name = ord.product_name || o.product_name || names.get(s.input.product_id) || s.input.product_id;
     const qty = s.input.quantity || ord.quantity || 1;
     const amount = ord.amount || o.amount;
-    outcomes.append(el("li", {}, statusPill(o.result || o.verdict || "UNKNOWN"),
+    const dryRun = s.name === "check_policy";
+    const tag = dryRun ? "DENIED" : (o.result || o.verdict || "UNKNOWN");
+    const reasons = (o.reasons || []).join("; ");
+    outcomes.append(el("li", {}, statusPill(tag),
       el("span", {class: "what"}, `${qty} × ${name}`), amount ? el("span", {class: "amt"}, usd(amount)) : null,
-      (o.reasons || []).length && o.result !== "AWAITING_PAYER_APPROVAL" && o.result !== "ORDER_PLACED"
-        ? el("span", {class: "why"}, o.reasons.join("; ")) : null));
+      reasons && !["AWAITING_PAYER_APPROVAL", "ORDER_PLACED"].includes(o.result)
+        ? el("span", {class: "why"}, (dryRun ? "refused at the policy check: " : "") + reasons) : null));
   }
   const trace = el("details", {class: "trace"}, el("summary", {}, `View all ${tools.length} tool calls`), renderAgentSteps(r.transcript));
   const kids = [el("div", {class: "answer-h"}, "Agent's answer"), el("div", {class: "final"}, r.final_text)];
-  if (last.size) kids.push(el("div", {class: "answer-h"}, "Outcomes (every order went through the policy gate)"), outcomes);
+  if (items.length) kids.push(el("div", {class: "answer-h"}, "Outcomes (every item went through the policy gate)"), outcomes);
   kids.push(trace);
   return kids;
 }

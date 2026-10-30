@@ -300,3 +300,5 @@ body.checkout { display: grid; place-items: center; min-height: 100vh; }
   .mrow { grid-template-columns: 1fr; gap: 2px; } .foot { padding: 0 16px 20px; }
 }
 @media (max-width: 420px) { .kpis { grid-template-columns: 1fr; } .kpi.wide { grid-column: auto; } }
+.scroll-cue { margin: 6px 2px 0; font-size: 12px; color: var(--muted); }
+.scroll-cue::before { content: "\2194  "; }

@@ -7,7 +7,13 @@
 //   - a second confirmDialog() settles the first one (no promise left pending);
 //   - a double Ctrl+Enter sends one agent request, not two;
 //   - a failing poll shows the connection banner, the next good poll hides it, and a failure of
-//     one resource is not hidden by another resource's success.
+//     one resource is not hidden by another resource's success;
+//   - a failed first load shows "Could not load" and the next good load restores the empty state
+//     (orders and audit); an audit that never loaded is not shown as "No guardrail decisions yet";
+//   - the outcome list keeps two finished purchases of the same product apart, collapses
+//     intermediate calls of one attempt, and lists a policy dry-run that was denied (gift card);
+//   - a checkout is opened only for PAYER_ACTION_REQUIRED and a vetted PayPal / mock URL;
+//   - Shift+Tab into a cell with buttons visits them (last first) before leaving the cell.
 //
 //   node scripts/ui_dashboard_jsdom.cjs http://127.0.0.1:PORT APPROVER_TOKEN APPROVAL_ID
 const {JSDOM, VirtualConsole} = require("jsdom");
@@ -24,7 +30,7 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   vc.on("error", (e) => errors.push(String(e)));
   const html = await (await fetch(base + "/")).text();
   const posts = [];
-  let breakOrders = false;
+  let breakOrders = false, breakAudit = false;
   const dom = new JSDOM(html, {
     url: base + "/", runScripts: "dangerously", resources: "usable", pretendToBeVisual: true, virtualConsole: vc,
     beforeParse(w) {
@@ -32,15 +38,16 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
         const url = String(u);
         if (o.method === "POST") posts.push({url, headers: o.headers || {}});
         if (breakOrders && url.startsWith("/orders")) throw new TypeError("Failed to fetch");
+        if (breakAudit && url.startsWith("/decisions")) throw new TypeError("Failed to fetch");
         return fetch(new URL(url, base), o);
       };
       w.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
-      w.open = () => null;
+      w.open = (u) => { (w.__opened = w.__opened || []).push(u); return null; };
       w.HTMLElement.prototype.scrollIntoView = function () {};
     },
   });
   const w = dom.window, d = w.document, $ = (id) => d.getElementById(id);
-  await until(() => w.agGrid && d.querySelectorAll("#kpis .kpi:not(.skeleton)").length === 4, 60000);
+  await until(() => w.agGrid && d.querySelectorAll("#kpis [data-kpi]").length === 4, 60000);
 
   // summary cards
   const cards = [...d.querySelectorAll("#kpis .kpi")];
@@ -111,6 +118,70 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   if ($("conn-banner").hidden || !$("conn-detail").textContent.includes("audit")) fail("core success must not hide an audit failure");
   w.eval("conn.ok('audit')");
   if (!$("conn-banner").hidden) fail("banner should clear once every resource recovered");
+
+
+  // error overlays: a failed first load says "Could not load"; the next good load restores the empty state
+  const tpl = (g) => w.eval(`${g}.getGridOption("overlayNoRowsTemplate")`);
+  // await a refresh that starts after this point (a poll may already be in flight)
+  const fresh = async () => { await w.eval("refresh()"); await w.eval("refresh()"); };
+  w.eval("conn.loadedOnce = false");
+  breakOrders = true; await fresh();
+  if (!/Could not load/.test(tpl("ordersGrid"))) fail("failed first load should show 'Could not load': " + tpl("ordersGrid") + " loadedOnce=" + w.eval("conn.loadedOnce"));
+  breakOrders = false; await fresh();
+  if (/Could not load/.test(tpl("ordersGrid")) || !/No orders yet/.test(tpl("ordersGrid"))) fail("recovery should restore the orders empty state");
+  if (/Could not load/.test(tpl("approvalsGrid"))) fail("recovery should restore the approvals empty state");
+  w.eval("overlays.auditLoaded = false");
+  breakAudit = true; await w.eval("refreshAudit()");
+  if (!/Could not load/.test(tpl("auditGrid")) || /No guardrail decisions yet/.test(tpl("auditGrid"))) fail("an audit that never loaded must not claim 'No guardrail decisions yet'");
+  breakAudit = false; await w.eval("refreshAudit()");
+  if (!/No guardrail decisions yet/.test(tpl("auditGrid"))) fail("audit recovery should restore its empty state");
+  if (!$("conn-banner").hidden) fail("banner should clear after audit recovery");
+
+  // outcome list: distinct attempts, intermediate calls collapsed, denied dry-run listed
+  const tr = [
+    {role: "user", text: "x"},
+    {role: "tool", name: "search_catalog", input: {query: "cable"}, output: {products: [{id: "P-1001", name: "USB-C Cable"}, {id: "P-5001", name: "Gift Card"}]}},
+    {role: "tool", name: "check_policy", input: {product_id: "P-5001", quantity: 1}, output: {verdict: "DENY", reasons: ["merchant blocked"], amount: "100.00"}},
+    {role: "tool", name: "create_order", input: {product_id: "P-1001", quantity: 2}, output: {result: "ORDER_PLACED", order: {amount: "25.98"}}},
+    {role: "tool", name: "create_order", input: {product_id: "P-1001", quantity: 4}, output: {result: "NEEDS_APPROVAL", verdict: "NEEDS_APPROVAL", reasons: ["over cap"]}},
+    {role: "tool", name: "request_approval", input: {product_id: "P-1001", quantity: 4, justification: "j"}, output: {result: "APPROVAL_REQUESTED", reasons: ["over cap"]}},
+  ];
+  w.__tr = tr;
+  const box = d.createElement("div");
+  box.append(...w.eval("renderAgentAnswer({final_text: 'done', transcript: window.__tr})"));
+  const lis = [...box.querySelectorAll(".outcomes li")].map((li) => li.textContent);
+  console.log("outcomes:", JSON.stringify(lis));
+  if (lis.length !== 3) fail("expected 3 outcome lines (gift card deny, 2 cables, 4 cables), got " + lis.length);
+  if (!/DENIED/.test(lis[0]) || !/Gift Card/.test(lis[0]) || !/refused at the policy check/.test(lis[0])) fail("dry-run deny line: " + lis[0]);
+  if (!/2 × USB-C Cable/.test(lis[1]) || !/4 × USB-C Cable/.test(lis[2]) || !/APPROVAL REQUESTED/.test(lis[2])) fail("same-product attempts must stay apart: " + lis.join(" | "));
+
+  // checkout opening: only PAYER_ACTION_REQUIRED + a vetted URL
+  w.__opened = [];
+  const realApi = w.eval("api");
+  const tryDecide = async (order) => {
+    w.__order = order;
+    w.eval("api = async () => ({result: 'X', order: window.__order})");
+    await w.eval("decide('APR-T', 'approve', document.createElement('button'))");
+  };
+  await tryDecide({id: "O1", status: "COMPLETED", approve_url: null});
+  await tryDecide({id: "O2", status: "PAYER_ACTION_REQUIRED", approve_url: null});
+  await tryDecide({id: "O3", status: "PAYER_ACTION_REQUIRED", approve_url: "https://evil.example/checkout"});
+  await tryDecide({id: "O4", status: "COMPLETED", approve_url: "https://www.sandbox.paypal.com/checkoutnow?token=A"});
+  await tryDecide({id: "O5", status: "PAYER_ACTION_REQUIRED", approve_url: "https://www.sandbox.paypal.com/checkoutnow?token=B"});
+  w.__realApi = realApi; w.eval("api = window.__realApi");
+  if (JSON.stringify(w.__opened) !== JSON.stringify(["https://www.sandbox.paypal.com/checkoutnow?token=B"])) fail("opened checkouts: " + JSON.stringify(w.__opened));
+
+  // Shift+Tab into a cell: last control, then the first, then out
+  const cell = d.createElement("div"); cell.className = "ag-cell"; cell.tabIndex = -1;
+  const b1 = d.createElement("button"), b2 = d.createElement("button"); cell.append(b1, b2); d.body.append(cell);
+
+  const press = (target) => { const ev = new w.KeyboardEvent("keydown", {key: "Tab", shiftKey: true}); Object.defineProperty(ev, "target", {value: target}); return w.eval("tabThroughControls")({event: ev}); };
+
+  cell.focus();
+  if (!press(cell) || d.activeElement !== b2) fail("Shift+Tab into a cell should focus its last button");
+  if (!press(b2) || d.activeElement !== b1) fail("Shift+Tab should move to the previous button");
+  if (press(b1)) fail("Shift+Tab from the first button should leave the cell");
+  cell.remove();
 
   const bad = errors.filter((e) => !/zero width|Could not parse CSS/.test(e));
   if (bad.length) fail("errors: " + bad.join("\n"));

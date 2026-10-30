@@ -12,8 +12,27 @@ const empty = (title, hint) =>
   `<div class="empty"><div class="empty-t">${escapeHtml(title)}</div><div class="empty-h">${escapeHtml(hint)}</div></div>`;
 const GRID_BASE = {loading: true, tooltipShowDelay: 200, suppressCellFocus: false,
                    overlayLoadingTemplate: '<div class="empty"><span class="spinner" aria-hidden="true"></span>Loading…</div>'};
-// on a phone-width grid the internal ids give way to item, amount and the action buttons
-const hideWhenNarrow = (cols) => (e) => e.api.setColumnsVisible(cols, e.clientWidth >= 700);
+// Phone-width layout: below 700px the technical columns are hidden (ids, justification and rule
+// text, which the confirmation dialog and the audit detail still show), the action column is pinned
+// to the right edge so Approve / Pay stay on screen, and a "scroll sideways" cue appears whenever
+// the remaining columns are still wider than the grid.
+const NARROW = 700;
+const narrowLayout = (gridId, cols, action) => (e) => {
+  const narrow = e.clientWidth < NARROW;
+  e.api.setColumnsVisible(cols, !narrow);
+  e.api.applyColumnState({state: [{colId: action, pinned: narrow ? "right" : null}]});
+  requestAnimationFrame(() => {
+    const vp = $(gridId).querySelector(".ag-center-cols-viewport");
+    $(`${gridId}-cue`).hidden = !(narrow && vp && vp.scrollWidth > vp.clientWidth + 2);
+  });
+};
+const LOAD_FAILED = empty("Could not load", "The server did not answer; retrying every 5 seconds.");
+const SPEND_EMPTY = empty("No data", "Spend and caps appear once the server answers.");
+// Error overlays are tracked apart from "has data ever loaded": a failed first load shows
+// "Could not load" until the next successful load of that same resource restores the normal empty
+// state, so an empty table is never shown as a failure, nor a failure as an empty result.
+const overlays = {coreError: false, auditError: false, auditLoaded: false};
+const AUDIT_EMPTY = empty("No guardrail decisions yet", "Every policy check and order attempt is logged here.");
 const APPROVALS_EMPTY = empty("Nothing waiting for you", "Requests over a cap appear here for a human decision.");
 const ORDERS_EMPTY = empty("No orders yet", "Ask the agent above: orders within your caps appear here.");
 // small grids grow with their rows; past `max` rows they keep a fixed height and scroll
@@ -33,7 +52,9 @@ function tabThroughControls(params) {
   const ctl = cell ? [...cell.querySelectorAll("button:not([disabled]), a[href]")] : [];
   if (!ctl.length) return false;
   const i = ctl.indexOf(document.activeElement);
-  const j = e.shiftKey ? (i > 0 ? i - 1 : -2) : (i < ctl.length - 1 ? i + 1 : -2);
+  // i === -1: the cell itself has focus (entered by Tab or Shift+Tab): go to the first control on
+  // Tab, the last one on Shift+Tab; leave the cell after the last (Tab) or first (Shift+Tab) one
+  const j = e.shiftKey ? (i === -1 ? ctl.length - 1 : i > 0 ? i - 1 : -2) : (i < ctl.length - 1 ? i + 1 : -2);
   if (j < 0) return false;
   e.preventDefault(); ctl[j].focus(); return true;
 }
@@ -92,9 +113,10 @@ async function decide(id, action, btn) {
     const r = await api(`/approvals/${id}/${action}`, {method: "POST",
       headers: {"X-Approver-Token": tokenInput.value}});
     const o = r.order;
-    if (o && o.approve_url) toast(`${id} approved → order ${o.id} awaits payer approval on PayPal`, "ok");
+    // the PayPal checkout opens only while the buyer still has to approve, and only for a vetted URL
+    const url = o && o.status === "PAYER_ACTION_REQUIRED" ? safeUrl(o.approve_url) : null;
+    if (url) toast(`${id} approved → order ${o.id} awaits payer approval on PayPal`, "ok");
     else toast(`${id}: ${r.result}${o ? " · " + o.id : ""}`);
-    const url = o && safeUrl(o.approve_url);
     if (url) window.open(url, "_blank", "noopener");
   } catch (e) { toast(`${action} failed: ${e.message}`, "bad"); btn.disabled = false; }
   refresh();
@@ -109,13 +131,13 @@ const approvalsGrid = agGrid.createGrid($("approvals"), {
     {field: "reasons", headerName: "Why it needs you", flex: 1.4, minWidth: 180,
       valueFormatter: (p) => (p.value || []).join("; "), tooltipValueGetter: (p) => (p.value || []).join("\n")},
     {field: "status", minWidth: 112, maxWidth: 118, cellRenderer: statusCell},
-    {headerName: "Decision", minWidth: 200, maxWidth: 205, cellRenderer: ApprovalButtons, sortable: false,
+    {colId: "decision", headerName: "Decision", minWidth: 200, maxWidth: 205, cellRenderer: ApprovalButtons, sortable: false,
      suppressKeyboardEvent: tabThroughControls},
   ],
   ...GRID_BASE, rowData: [], domLayout: "autoHeight",
   overlayNoRowsTemplate: APPROVALS_EMPTY,
   getRowId: (p) => p.data.id, rowClass: "row-pending", suppressColumnVirtualisation: true,
-  onGridSizeChanged: hideWhenNarrow(["id"]),
+  onGridSizeChanged: narrowLayout("approvals", ["id", "quantity", "justification", "reasons", "status"], "decision"),
   rowHeight: 48, autoSizeStrategy: {type: "fitGridWidth"},
   defaultColDef: {resizable: true, sortable: true},
 });
@@ -149,19 +171,19 @@ const ordersGrid = agGrid.createGrid($("orders"), {
       tooltipField: "product_name", cellClass: "wrap-cell"},
     {field: "quantity", headerName: "Qty", minWidth: 60, maxWidth: 65, ...MONEY_COL},
     {field: "amount", headerName: "Amount", minWidth: 95, maxWidth: 105, valueFormatter: (p) => usd(p.value), ...MONEY_COL},
-    {headerName: "Policy", minWidth: 118, maxWidth: 122, valueGetter: (p) => p.data.approval_id ? "APPROVED" : (p.data.decision || {}).verdict,
+    {colId: "policy", headerName: "Policy", minWidth: 118, maxWidth: 122, valueGetter: (p) => p.data.approval_id ? "APPROVED" : (p.data.decision || {}).verdict,
       cellRenderer: statusCell},
     {field: "status", headerName: "Status", minWidth: 160, maxWidth: 165, cellRenderer: statusCell},
     {field: "paypal_order_id", headerName: "PayPal order", width: 178, suppressSizeToFit: true,
       tooltipField: "paypal_order_id"},
     // wide enough for a 17-character capture id (e.g. 8VA9873790040992M) and the Pay button
-    {headerName: "Payment / capture", width: 182, suppressSizeToFit: true, cellRenderer: PayCell, sortable: false, suppressKeyboardEvent: tabThroughControls,
+    {colId: "payment", headerName: "Payment / capture", width: 182, suppressSizeToFit: true, cellRenderer: PayCell, sortable: false, suppressKeyboardEvent: tabThroughControls,
       tooltipValueGetter: (p) => p.data && p.data.capture_id ? `Capture ${p.data.capture_id}` : null},
   ],
   ...GRID_BASE, rowData: [], domLayout: "autoHeight",
   overlayNoRowsTemplate: ORDERS_EMPTY,
   getRowId: (p) => p.data.id,
-  onGridSizeChanged: hideWhenNarrow(["id", "paypal_order_id"]),
+  onGridSizeChanged: narrowLayout("orders", ["id", "paypal_order_id", "created_at", "quantity", "policy"], "payment"),
   rowClassRules: {"row-await": (p) => p.data && p.data.status === "PAYER_ACTION_REQUIRED",
                   "row-done": (p) => p.data && p.data.status === "COMPLETED",
                   "row-bad": (p) => p.data && ["FAILED", "CAPTURE_FAILED", "NEEDS_RECONCILIATION"].includes(p.data.status)},
@@ -230,7 +252,7 @@ const auditGrid = agGrid.createGrid($("audit"), {
   defaultColDef: {resizable: true, sortable: true, floatingFilter: true},
   rowSelection: {mode: "singleRow", checkboxes: false, enableClickSelection: true},
   ...GRID_BASE, rowHeight: 40,
-  overlayNoRowsTemplate: empty("No guardrail decisions yet", "Every policy check and order attempt is logged here."),
+  overlayNoRowsTemplate: AUDIT_EMPTY,
   isExternalFilterPresent: () => $("audit-hide-checks").checked,
   doesExternalFilterPass: (node) => node.data.stage !== "check",
   onRowClicked: (e) => showDecision(e.data.id),
@@ -407,11 +429,18 @@ function refreshAudit() {  // newest audit page + the open detail; never overlap
   if (auditRefreshing) return auditRefreshing;
   auditRefreshing = (async () => {
     try {
-      auditApply(await api(`/decisions?limit=${AUDIT_PAGE}`), false);
+      const page = await api(`/decisions?limit=${AUDIT_PAGE}`);
+      if (overlays.auditError) { overlays.auditError = false; auditGrid.setGridOption("overlayNoRowsTemplate", AUDIT_EMPTY); }
+      overlays.auditLoaded = true;
+      auditApply(page, false);
       if (detail.id && !$("audit-detail").hidden) await showDecision(detail.id, {quiet: true});
       conn.ok("audit");
     } catch (e) {
       conn.fail("audit", e);
+      if (!overlays.auditLoaded) {  // never loaded: say so instead of "No guardrail decisions yet"
+        overlays.auditError = true;
+        auditGrid.setGridOption("overlayNoRowsTemplate", LOAD_FAILED);
+      }
       auditGrid.setGridOption("loading", false);
     }
   })().finally(() => { auditRefreshing = null; });
@@ -443,11 +472,13 @@ async function doRefresh() {
     approvalsGrid.setGridOption("rowData", pendingRows);
     fitRows(ordersGrid, "orders", orders.length, 8);
     fitRows(approvalsGrid, "approvals", pendingRows.length, 6);
-    for (const g of [ordersGrid, approvalsGrid, spendGrid]) g.setGridOption("loading", false);
-    if (!conn.loadedOnce) {
+    if (overlays.coreError) {  // recovered from a failed first load: back to the normal empty states
+      overlays.coreError = false;
       ordersGrid.setGridOption("overlayNoRowsTemplate", ORDERS_EMPTY);
       approvalsGrid.setGridOption("overlayNoRowsTemplate", APPROVALS_EMPTY);
+      spendGrid.setGridOption("overlayNoRowsTemplate", SPEND_EMPTY);
     }
+    for (const g of [ordersGrid, approvalsGrid, spendGrid]) g.setGridOption("loading", false);
     const badge = $("approvals-count");
     badge.textContent = pendingRows.length; badge.hidden = !pendingRows.length;
     spendGrid.setGridOption("rowData", [
@@ -460,9 +491,10 @@ async function doRefresh() {
     renderKpis(spend, pendingRows.length);
   } catch (e) {
     conn.fail("core", e);
-    if (!conn.loadedOnce) {  // first load failed: show an error instead of an endless "Loading…"
+    if (!conn.loadedOnce) {  // nothing loaded yet: show an error instead of an endless "Loading…"
+      overlays.coreError = true;
       for (const g of [ordersGrid, approvalsGrid, spendGrid]) {
-        g.setGridOption("overlayNoRowsTemplate", empty("Could not load", "The server did not answer; retrying every 5 seconds."));
+        g.setGridOption("overlayNoRowsTemplate", LOAD_FAILED);
         g.setGridOption("loading", false);
       }
     }

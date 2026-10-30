@@ -178,7 +178,7 @@ def sandbox_buyer_pay(page, r, base, email, password):
     btn.click()
     t_pay = r.now()
     page.wait_for_url(base + "/**", timeout=90_000)
-    page.wait_for_selector("#kpis .kpi", timeout=30_000)
+    page.wait_for_selector("#kpis [data-kpi]", timeout=30_000)
     if r.now() - t_pay > 3.0:
         r.cuts.append([round(t_pay + 1.2, 2), round(r.now() - 0.6, 2)])
 
@@ -257,7 +257,7 @@ def main():
         page.goto(a.base + "/")
         page.fill("#token", a.token)
         page.dispatch_event("#token", "change")
-        page.wait_for_selector("#kpis .kpi")
+        page.wait_for_selector("#kpis [data-kpi]")
         r.cap("Live dashboard · PayPal mode: Sandbox (api-m.sandbox.paypal.com)")
         page.hover("#kpis [data-kpi=spend]")
         page.wait_for_timeout(3500)
@@ -301,7 +301,7 @@ def main():
         # s6 approve the keyboard
         r.start("s6_approve")
         page.goto(a.base + "/")
-        page.wait_for_selector("#kpis .kpi")
+        page.wait_for_selector("#kpis [data-kpi]")
         page.locator("#approvals").scroll_into_view_if_needed()
         r.cap("Human in the loop: approver token required")
         page.wait_for_timeout(3500)
@@ -352,7 +352,7 @@ def main():
                 else:  # a buyer already logged in sees "Return to Test Store" instead
                     page.get_by_text(re.compile(r"Cancel and return|Return to ")).first.click(timeout=8000)
                 page.wait_for_url(a.base + "/**", timeout=30_000)
-                page.wait_for_selector("#kpis .kpi")
+                page.wait_for_selector("#kpis [data-kpi]")
                 r.cap("Back in the app: order CANCELLED, reserved budget released")
                 page.locator("#orders").scroll_into_view_if_needed()
                 page.wait_for_timeout(3500)  # hold on the result even when the narration is already done

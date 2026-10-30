@@ -105,6 +105,10 @@ console.log(JSON.stringify({
   label: t.statusLabel('CAPTURE_FAILED'),
   pct: [t.pct(25.98, 150), t.pct(500, 150), t.pct(5, 0), t.pct(-1, 10)],
   urls: ['https://www.sandbox.paypal.com/checkoutnow?token=X', '/paypal/mock-checkout?token=M', 'javascript:alert(1)', 'data:text/html,x', null].map(t.safeUrl),
+  more: ['http://localhost:8011/paypal/mock-checkout?token=M', 'https://www.paypal.com/checkoutnow?token=Y',
+         undefined, '', '   ', 42, 'https://evil.example/checkout', 'https://paypal.com.evil.example/x',
+         'http://www.sandbox.paypal.com/checkoutnow', 'https://u:p@www.paypal.com/x', '/somewhere-else',
+         'https://evil.example/paypal/mock-checkout?token=M'].map(t.safeUrl),
 }));
 """
 
@@ -126,4 +130,48 @@ def test_ui_formatting_helpers(tmp_path):
     # only http(s) checkout links are linked / opened
     assert out["urls"][:2] == ["https://www.sandbox.paypal.com/checkoutnow?token=X",
                                "http://127.0.0.1:8000/paypal/mock-checkout?token=M"]
-    assert out["urls"][2:4] == [None, None]
+    assert out["urls"][2:5] == [None, None, None]  # null no longer becomes /null (UI review 2)
+    # only PayPal (https, paypal.com or a subdomain) or the app's own mock checkout page
+    assert out["more"][:2] == ["http://localhost:8011/paypal/mock-checkout?token=M", "https://www.paypal.com/checkoutnow?token=Y"]
+    assert out["more"][2:] == [None] * 10
+
+
+OUTCOMES = r"""
+const fs = require('fs'), vm = require('vm');
+const ctx = {document: {getElementById() { return null; }}, Intl, Number, String, Object, Math, console, URL,
+  location: {href: 'http://127.0.0.1:8000/'}};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8') + ';globalThis.__o = agentOutcomes;', ctx);
+const T = (name, input, output) => ({role: 'tool', name, input, output});
+const tr = [
+  {role: 'user', text: 'x'},
+  T('search_catalog', {query: 'cable'}, {products: []}),
+  T('check_policy', {product_id: 'P-5001', quantity: 1}, {verdict: 'DENY', reasons: ['blocked merchant']}),
+  T('check_policy', {product_id: 'P-1001', quantity: 2}, {verdict: 'ALLOW', reasons: []}),
+  T('create_order', {product_id: 'P-1001', quantity: 2}, {result: 'ORDER_PLACED'}),
+  T('create_order', {product_id: 'P-1001', quantity: 4}, {result: 'NEEDS_APPROVAL'}),
+  T('request_approval', {product_id: 'P-1001', quantity: 4, justification: 'j'}, {result: 'APPROVAL_REQUESTED'}),
+  T('check_policy', {product_id: 'P-5002', quantity: 1}, {verdict: 'DENY', reasons: ['blocked']}),
+  T('create_order', {product_id: 'P-5002', quantity: '1'}, {result: 'DENIED', reasons: ['blocked']}),
+  T('create_order', {product_id: 'P-1001', quantity: 2}, {result: 'ORDER_PLACED'}),
+];
+const {items} = ctx.__o(tr);
+console.log(JSON.stringify(items.map((i) => [i.s.name, i.s.input.product_id, String(i.s.input.quantity), i.s.output.result || i.s.output.verdict])));
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="node not available")
+def test_agent_outcome_list_keeps_attempts_and_dry_run_denies(tmp_path):
+    """UI review 2: one line per purchase attempt (not per product), intermediate calls of one attempt
+    collapsed, and a policy dry-run that was denied (e.g. a gift card) listed even with no order call."""
+    h = tmp_path / "o.cjs"
+    h.write_text(OUTCOMES)
+    r = subprocess.run([NODE, str(h), str(ROOT / "app/static/ui.js")], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == [
+        ["check_policy", "P-5001", "1", "DENY"],              # dry-run refusal, no order call followed
+        ["create_order", "P-1001", "2", "ORDER_PLACED"],      # the ALLOW dry-run is not an outcome of its own
+        ["request_approval", "P-1001", "4", "APPROVAL_REQUESTED"],  # NEEDS_APPROVAL step collapsed into it
+        ["create_order", "P-5002", "1", "DENIED"],            # the order call replaces the denied dry run
+        ["create_order", "P-1001", "2", "ORDER_PLACED"],      # a second finished purchase stays its own line
+    ]
