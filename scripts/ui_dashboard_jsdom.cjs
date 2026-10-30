@@ -30,7 +30,7 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   vc.on("error", (e) => errors.push(String(e)));
   const html = await (await fetch(base + "/")).text();
   const posts = [];
-  let breakOrders = false, breakAudit = false;
+  let breakOrders = false, breakAudit = false, emptyAudit = false;
   const dom = new JSDOM(html, {
     url: base + "/", runScripts: "dangerously", resources: "usable", pretendToBeVisual: true, virtualConsole: vc,
     beforeParse(w) {
@@ -39,6 +39,8 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
         if (o.method === "POST") posts.push({url, headers: o.headers || {}});
         if (breakOrders && url.startsWith("/orders")) throw new TypeError("Failed to fetch");
         if (breakAudit && url.startsWith("/decisions")) throw new TypeError("Failed to fetch");
+        if (emptyAudit && url.startsWith("/decisions?"))
+          return new Response(JSON.stringify({items: [], total: 0, has_more: false, next_before_id: null}), {headers: {"content-type": "application/json"}});
         return fetch(new URL(url, base), o);
       };
       w.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
@@ -120,21 +122,22 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   if (!$("conn-banner").hidden) fail("banner should clear once every resource recovered");
 
 
-  // error overlays: a failed first load says "Could not load"; the next good load restores the empty state
-  const tpl = (g) => w.eval(`${g}.getGridOption("overlayNoRowsTemplate")`);
-  // await a refresh that starts after this point (a poll may already be in flight)
-  const fresh = async () => { await w.eval("refresh()"); await w.eval("refresh()"); };
-  w.eval("conn.loadedOnce = false");
-  breakOrders = true; await fresh();
-  if (!/Could not load/.test(tpl("ordersGrid"))) fail("failed first load should show 'Could not load': " + tpl("ordersGrid") + " loadedOnce=" + w.eval("conn.loadedOnce"));
-  breakOrders = false; await fresh();
-  if (/Could not load/.test(tpl("ordersGrid")) || !/No orders yet/.test(tpl("ordersGrid"))) fail("recovery should restore the orders empty state");
-  if (/Could not load/.test(tpl("approvalsGrid"))) fail("recovery should restore the approvals empty state");
-  w.eval("overlays.auditLoaded = false");
-  breakAudit = true; await w.eval("refreshAudit()");
-  if (!/Could not load/.test(tpl("auditGrid")) || /No guardrail decisions yet/.test(tpl("auditGrid"))) fail("an audit that never loaded must not claim 'No guardrail decisions yet'");
-  breakAudit = false; await w.eval("refreshAudit()");
-  if (!/No guardrail decisions yet/.test(tpl("auditGrid"))) fail("audit recovery should restore its empty state");
+  // error overlays: a failed first load says "Could not load"; the next good load restores the empty
+  // state. Checked on the overlay text actually rendered (approvals is empty here after the reject).
+  const shown = (id) => { const o = d.querySelector(`#${id} .ag-overlay`); return o ? o.textContent.replace(/\s+/g, " ").trim() : ""; };
+  const fresh = async () => { await w.eval("refresh()"); await w.eval("refresh()"); };  // one that starts after this point
+  breakOrders = true; await w.eval("refresh()");  // let any poll that started before the break finish
+  w.eval("conn.loadedOnce = false"); await w.eval("refresh()"); await sleep(100);
+  if (!/Could not load/.test(shown("approvals"))) fail("failed first load should render 'Could not load': " + shown("approvals"));
+  breakOrders = false; await fresh(); await sleep(100);
+  if (/Could not load/.test(shown("approvals")) || !/Nothing waiting for you/.test(shown("approvals"))) fail("recovery should render the approvals empty state: " + shown("approvals"));
+  // audit: never loaded + failing -> "Could not load" (not "No guardrail decisions yet"); then an empty success
+  w.eval("overlays.auditLoaded = false; audit.rows.clear(); audit.oldestCursor = null; auditGrid.setGridOption('rowData', [])");
+  breakAudit = true; await w.eval("refreshAudit()"); await sleep(100);
+  if (!/Could not load/.test(shown("audit")) || /No guardrail decisions yet/.test(shown("audit"))) fail("an audit that never loaded must render 'Could not load': " + shown("audit"));
+  breakAudit = false; emptyAudit = true; await w.eval("refreshAudit()"); await sleep(100);
+  if (!/No guardrail decisions yet/.test(shown("audit"))) fail("audit recovery should render its empty state: " + shown("audit"));
+  emptyAudit = false; await w.eval("refreshAudit()");
   if (!$("conn-banner").hidden) fail("banner should clear after audit recovery");
 
   // outcome list: distinct attempts, intermediate calls collapsed, denied dry-run listed

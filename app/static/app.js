@@ -27,11 +27,17 @@ const narrowLayout = (gridId, cols, action) => (e) => {
   });
 };
 const LOAD_FAILED = empty("Could not load", "The server did not answer; retrying every 5 seconds.");
-const SPEND_EMPTY = empty("No data", "Spend and caps appear once the server answers.");
 // Error overlays are tracked apart from "has data ever loaded": a failed first load shows
 // "Could not load" until the next successful load of that same resource restores the normal empty
 // state, so an empty table is never shown as a failure, nor a failure as an empty result.
 const overlays = {coreError: false, auditError: false, auditLoaded: false};
+// AG Grid does not re-render an overlay that is already mounted when its template option changes:
+// set the template, then re-show the no-rows overlay so the text on screen actually changes.
+function setEmptyOverlay(g, tpl) {
+  g.setGridOption("overlayNoRowsTemplate", tpl);
+  g.setGridOption("loading", false);
+  if (g.getDisplayedRowCount() === 0) { g.hideOverlay(); g.showNoRowsOverlay(); }
+}
 const AUDIT_EMPTY = empty("No guardrail decisions yet", "Every policy check and order attempt is logged here.");
 const APPROVALS_EMPTY = empty("Nothing waiting for you", "Requests over a cap appear here for a human decision.");
 const ORDERS_EMPTY = empty("No orders yet", "Ask the agent above: orders within your caps appear here.");
@@ -430,16 +436,16 @@ function refreshAudit() {  // newest audit page + the open detail; never overlap
   auditRefreshing = (async () => {
     try {
       const page = await api(`/decisions?limit=${AUDIT_PAGE}`);
-      if (overlays.auditError) { overlays.auditError = false; auditGrid.setGridOption("overlayNoRowsTemplate", AUDIT_EMPTY); }
       overlays.auditLoaded = true;
       auditApply(page, false);
+      if (overlays.auditError) { overlays.auditError = false; setEmptyOverlay(auditGrid, AUDIT_EMPTY); }
       if (detail.id && !$("audit-detail").hidden) await showDecision(detail.id, {quiet: true});
       conn.ok("audit");
     } catch (e) {
       conn.fail("audit", e);
       if (!overlays.auditLoaded) {  // never loaded: say so instead of "No guardrail decisions yet"
         overlays.auditError = true;
-        auditGrid.setGridOption("overlayNoRowsTemplate", LOAD_FAILED);
+        setEmptyOverlay(auditGrid, LOAD_FAILED);
       }
       auditGrid.setGridOption("loading", false);
     }
@@ -472,13 +478,12 @@ async function doRefresh() {
     approvalsGrid.setGridOption("rowData", pendingRows);
     fitRows(ordersGrid, "orders", orders.length, 8);
     fitRows(approvalsGrid, "approvals", pendingRows.length, 6);
+    for (const g of [ordersGrid, approvalsGrid, spendGrid]) g.setGridOption("loading", false);
     if (overlays.coreError) {  // recovered from a failed first load: back to the normal empty states
       overlays.coreError = false;
-      ordersGrid.setGridOption("overlayNoRowsTemplate", ORDERS_EMPTY);
-      approvalsGrid.setGridOption("overlayNoRowsTemplate", APPROVALS_EMPTY);
-      spendGrid.setGridOption("overlayNoRowsTemplate", SPEND_EMPTY);
+      setEmptyOverlay(ordersGrid, ORDERS_EMPTY);
+      setEmptyOverlay(approvalsGrid, APPROVALS_EMPTY);
     }
-    for (const g of [ordersGrid, approvalsGrid, spendGrid]) g.setGridOption("loading", false);
     const badge = $("approvals-count");
     badge.textContent = pendingRows.length; badge.hidden = !pendingRows.length;
     spendGrid.setGridOption("rowData", [
@@ -493,10 +498,7 @@ async function doRefresh() {
     conn.fail("core", e);
     if (!conn.loadedOnce) {  // nothing loaded yet: show an error instead of an endless "Loading…"
       overlays.coreError = true;
-      for (const g of [ordersGrid, approvalsGrid, spendGrid]) {
-        g.setGridOption("overlayNoRowsTemplate", LOAD_FAILED);
-        g.setGridOption("loading", false);
-      }
+      for (const g of [ordersGrid, approvalsGrid, spendGrid]) setEmptyOverlay(g, LOAD_FAILED);
     }
   }
 }
