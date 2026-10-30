@@ -53,6 +53,10 @@ from .guardrails import (Decision, OrderRequest, Policy, SpendLedger, Verdict,
 from .paypal_client import MockPayPal, PayPalClient, PayPalError
 
 
+class PolicyConflict(ValueError):
+    """An owner edit was based on a policy revision that is no longer current."""
+
+
 class MockLockError(RuntimeError):
     """Another process already serves this database in mock mode."""
 
@@ -996,14 +1000,24 @@ class BuyerService:
 
     def sync_policy(self) -> Policy:
         """Adopt the owner's policy override if another call or process changed it. One
-        indexed read; called at the start of every policy decision."""
+        indexed read; called at the start of every policy decision. Read and adopt happen
+        under the store lock, which every policy write holds too, so a slow reader can never
+        install an older policy over a newer one."""
         with self.store.lock:
             row = self.store.conn.execute("SELECT value FROM meta WHERE key='policy_override'").fetchone()
-        raw = row[0] if row else None
-        if raw != self._policy_raw:
-            self.policy = Policy.from_dict(json.loads(raw)) if raw else self.base_policy
-            self._policy_raw = raw
-        return self.policy
+            raw = row[0] if row else None
+            if raw != self._policy_raw:
+                self.policy = Policy.from_dict(json.loads(raw)) if raw else self.base_policy
+                self._policy_raw = raw
+            return self.policy
+
+    def policy_revision(self) -> str:
+        """Opaque id of the policy in force (changes with every owner edit), for
+        optimistic concurrency: PUT /policy with a stale base_revision is refused."""
+        with self.store.lock:
+            self.sync_policy()
+            raw = self._policy_raw or "base:" + json.dumps(self.base_policy.to_dict(), sort_keys=True)
+            return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     @classmethod
     def validate_policy_update(cls, current: Policy, body: Any) -> Policy:
@@ -1050,17 +1064,22 @@ class BuyerService:
             raise ValueError("per_order_cap must not exceed daily_cap")
         return Policy.from_dict(merged)  # also checks hard_max_per_order >= per_order_cap
 
-    def update_policy(self, body: Any, actor: str = "owner") -> dict[str, Any]:
+    def update_policy(self, body: Any, actor: str = "owner", base_revision: str | None = None) -> dict[str, Any]:
         """Apply an owner edit atomically (validated against the policy current inside the
-        write transaction) and append it to the policy history. Orders already created are
+        write transaction) and append it to the policy history. With `base_revision` (the
+        dashboard always sends it) an edit made on a policy that changed meanwhile is refused
+        (PolicyConflict) instead of silently undoing the other edit. Orders already created are
         not revoked; pending approvals are re-checked against the deny rules when approved."""
         with self.store.tx() as c:
             current = self.sync_policy()
+            if base_revision is not None and base_revision != self.policy_revision():
+                raise PolicyConflict("the policy was changed by someone else since you loaded it; "
+                                     "reload and apply your edit again")
             new = self.validate_policy_update(current, body)
             before, after = current.to_dict(), new.to_dict()
             changed = {k: {"from": before[k], "to": after[k]} for k in after if before[k] != after[k]}
             if not changed:
-                return {"result": "UNCHANGED", "policy": after}
+                return {"result": "UNCHANGED", "policy": after, "revision": self.policy_revision()}
             raw = json.dumps(after, sort_keys=True)
             c.execute("INSERT INTO meta(key, value) VALUES ('policy_override', ?) "
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (raw,))
@@ -1072,7 +1091,8 @@ class BuyerService:
             c.execute("INSERT INTO meta(key, value) VALUES ('policy_history', ?) "
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(hist),))
             self.policy, self._policy_raw = new, raw
-        return {"result": "UPDATED", "policy": after, "change": entry}
+            revision = self.policy_revision()
+        return {"result": "UPDATED", "policy": after, "change": entry, "revision": revision}
 
     def policy_history(self) -> list[dict[str, Any]]:
         with self.store.lock:

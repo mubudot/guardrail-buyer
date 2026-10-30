@@ -161,3 +161,54 @@ def test_policy_script_only_uses_existing_elements_and_community_features(servic
     assert {"policy-caps", "policy-merchants", "policy-categories", "spend-chart", "policy-save"} <= ids
     assert not {i for i in ids if f'id="{i}"' not in html}
     assert "enterprise" not in js.lower() and "LicenseManager" not in js
+
+
+def test_stale_revision_is_refused_with_409(service):
+    c = client(service)
+    h = {"X-Owner-Token": "appr"}
+    rev0 = c.get("/policy").json()["revision"]
+    pol = c.get("/policy").json()
+    # owner B removes Sandbox Electronics; owner A (still on rev0) removes Sandbox Cloud from the same list
+    b = [m for m in pol["allowed_merchants"] if m != "sandbox electronics"]
+    a = [m for m in pol["allowed_merchants"] if m != "sandbox cloud"]
+    r = c.put("/policy", json={"allowed_merchants": b}, headers={**h, "If-Match": rev0})
+    assert r.status_code == 200 and r.json()["revision"] != rev0
+    r = c.put("/policy", json={"allowed_merchants": a}, headers={**h, "If-Match": rev0})
+    assert r.status_code == 409 and "changed by someone else" in r.json()["detail"]
+    assert service.check("P-1001", 1)["verdict"] == "DENY"  # B's removal was not undone
+    assert len(c.get("/policy/history").json()) == 1
+
+
+def test_slow_policy_reader_cannot_install_an_older_policy(policy, catalog):
+    """Regression (Codex upgrade review): a reader that read the old override must not overwrite
+    a newer one adopted meanwhile; reads and writes of the policy are serialized."""
+    import threading
+    from unittest.mock import patch
+    from app.guardrails import Policy
+
+    s = BuyerService(policy, catalog, MockPayPal())
+    writer = BuyerService(policy, catalog, MockPayPal())
+    writer.store, writer.ledger = s.store, s.ledger  # a second worker sharing the database
+    writer.update_policy({"per_order_cap": "100"})
+    in_reader, resume = threading.Event(), threading.Event()
+    original = Policy.from_dict.__func__
+
+    def slow_from_dict(cls, data):
+        if threading.current_thread().name == "slow-reader":
+            in_reader.set()
+            assert resume.wait(5)
+        return original(cls, data)
+
+    with patch.object(Policy, "from_dict", classmethod(slow_from_dict)):
+        reader = threading.Thread(target=s.sync_policy, name="slow-reader")
+        reader.start()
+        assert in_reader.wait(5)
+        w = threading.Thread(target=lambda: writer.update_policy({"per_order_cap": "1"}))
+        w.start()
+        w.join(0.3)
+        assert w.is_alive()  # the write waits for the reader instead of racing it
+        resume.set()
+        reader.join(5)
+        w.join(5)
+    assert s.place_order("P-1003", 1)["result"] == "NEEDS_APPROVAL"  # 89 > the newest cap 1.00
+    assert str(s.policy.per_order_cap) == "1.00"

@@ -81,7 +81,8 @@ tab were added after recording (README: "Use it from any MCP agent", repro step 
   call to the GuardRail server (`POST /tools/{name}`), where a strict schema gateway (`GuardedTools`,
   `additionalProperties: false`, no coercion) hands it to `BuyerService`; embedded mode is a keyless
   offline sandbox. The process scrubs PayPal credentials and the approver token from its environment, and
-  one session id per MCP session makes split orders count as one purchase. We evaluated PayPal's Agent
+  external orders are grouped server-side per policy day, so splitting a purchase (even across sessions)
+  still counts as one purchase. We evaluated PayPal's Agent
   Toolkit / MCP server and chose to wrap Orders v2 ourselves: those tools give the agent PayPal authority
   and model-chosen amounts, which our gate exists to prevent (details in the README).
 - **Dashboard:** plain HTML/JS with **AG Grid Community** 32.3.3 and **AG Charts Community** 10.3.3, vendored (approvals grid with action
@@ -89,11 +90,11 @@ tab were added after recording (README: "Use it from any MCP agent", repro step 
   decision: column filters, quick search, risk highlighting, CSV export, and a detail panel with the
   quote, every rule evaluated and the payment's status timeline; a **Policy & spend** tab with editable
   policy grids (`agTextCellEditor` / `agSelectCellEditor`, dirty-cell highlighting, owner-token save to
-  `PUT /policy` with server-side validation, change history) and a spend-over-time chart).
+  `PUT /policy` with server-side validation and `If-Match` revision check, change history) and a spend-over-time chart).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 345 pytest tests (343 run everywhere; 1 headless-browser UI test needs jsdom, 1 interop test
-  needs the official MCP SDK): guardrails, payment flow, reservations/expiry, ambiguous PayPal outcomes and
+- **Tests:** 353 pytest tests (350 run with Python alone; 1 dashboard-logic test needs node, 1 headless UI
+  test needs node + jsdom, 1 interop test needs the official MCP SDK): guardrails, payment flow, reservations/expiry, ambiguous PayPal outcomes and
   reconciliation, API, agent loop with a scripted fake LLM, offline mode, thread/barrier concurrency tests
   for budget races, double approvals and cancel-vs-capture, MCP protocol + end-to-end stdio sessions
   (embedded and against a running server, prompt-injection attempts included), policy-edit validation, plus
@@ -142,8 +143,8 @@ per-requester identity or ownership, so don't expose it publicly); catalog merch
 payments go to the single Sandbox merchant of the configured app; spend counts on the day it was reserved;
 policy changes don't revoke orders already created; split-order aggregation covers only the same item
 from the same merchant within one request; mock PayPal state is in memory (one mock server per database, enforced by a lock file); the MCP/`/tools`
-surface has the same local-demo scope (no per-client auth, split-order aggregation per MCP session); policy
-edits use one owner token. Details in the README.
+surface has the same local-demo scope (no per-client auth; split-order aggregation per SKU, merchant and
+day); policy edits use one owner token. Details in the README.
 
 ## What we learned
 
@@ -193,7 +194,7 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 343 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
+python -m pytest -q                      # 351 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card

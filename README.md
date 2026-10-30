@@ -157,7 +157,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 343 passed, 2 skipped (jsdom UI test, optional MCP SDK interop)
+python -m pytest -q                                     # -> 351 passed, 2 skipped (jsdom UI test, optional MCP SDK interop; 3 skipped without node)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -238,7 +238,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `343 passed, 2 skipped` (no network, no API key needed; the two skips need jsdom / the official `mcp` SDK).
+1. **Run the tests** — `python -m pytest -q` → see `351 passed, 2 skipped` (no network, no API key needed; the skips need jsdom / the official `mcp` SDK; without `node` one more test is skipped).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -343,8 +343,9 @@ The agent gets seven tools and nothing else:
   running GuardRail server (`POST /tools/{name}`), which holds the PayPal credentials. At start it removes
   `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_ACCESS_TOKEN`, `APPROVER_TOKEN` and `STATE_SECRET`
   from its own environment, and results are reduced to public order fields (no signed cancel state).
-- All calls of one MCP session share a session id, so splitting one purchase into several same-SKU orders
-  counts as one purchase for the per-order cap and the hard maximum (same rule as one `/agent/request`).
+- Splitting doesn't help: every order an external agent places is grouped server-side per policy day, so
+  same-SKU orders at the same merchant count as one purchase for the per-order cap and the hard maximum,
+  across MCP sessions and REST callers (the client can't choose or rotate the group).
 
 **Two modes.** *Remote* (`GRB_API_URL=http://127.0.0.1:8000`): the full product (orders appear in the
 dashboard, approvals by a human, payment on PayPal Sandbox or the mock checkout). *Embedded* (no
@@ -455,13 +456,13 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 | GET | `/decisions` | audit log: every guardrail decision (policy check, create order, approval request, approval execution) with verdict, rule hit, amount, merchant, request id, timestamp and the current status of the order/approval it led to newest first, compact rows (rules load in the detail). Paged: `{items, total, limit, has_more, next_before_id}`; `?limit=` (1–5000, default 1000), `?before_id=<decision id>` = keyset cursor for older decisions |
 | GET | `/decisions/{id}` | one decision: quote, every rule evaluated (PASS / DENY / NEEDS_APPROVAL / WAIVED / SKIPPED), approval, and the order's payment timeline (status transitions) |
 | GET | `/spend` | today's captured / reserved / remaining vs caps |
-| GET | `/policy` | active policy + today's spend |
+| GET | `/policy` | active policy + today's spend + `revision` (changes with every owner edit) |
 | GET | `/` | AG Grid dashboard |
 | GET | `/catalog` | demo products (`?q=keyboard`) |
 | GET | `/health` | PayPal mode, model, approver mode, policy owner mode, rate limits, `instance` (= `GRB_INSTANCE`) |
 | GET | `/tools` | the guarded tool set (same JSON schemas the MCP server publishes) |
-| POST | `/tools/{name}` | `{"arguments": {...}, "session_id": "mcp-<16 hex>"}` — run one guarded tool through the policy gate (used by the MCP server in remote mode). Policy outcomes are `200 {"ok": true, "result": …}`; invalid arguments / unknown ids are `{"ok": false, "code": …}`; unknown tool → `404`. Rate-limited per client IP (`TOOLS_RATE_LIMIT`, default 120/60 s) |
-| PUT | `/policy` | owner edit of `per_order_cap`, `daily_cap`, `hard_max_per_order`, `allowed_categories`, `allowed_merchants`, `blocked_merchants` (only the fields to change). Needs `X-Owner-Token`; validated server-side (amounts with ≤ 2 decimals, per-order ≤ daily ≤ …, hard max ≥ per-order, non-empty allowlists, no merchant both allowed and blocked) → `422` with the reason, nothing changes |
+| POST | `/tools/{name}` | `{"arguments": {...}, "session_id": "mcp-<16 hex>"}` (session id optional: validated, never used for policy decisions) — run one guarded tool through the policy gate (used by the MCP server in remote mode). Orders are grouped per policy day for split-order aggregation. Policy outcomes are `200 {"ok": true, "result": …}`; invalid arguments / unknown ids are `{"ok": false, "code": …}`; unknown tool → `404`. Rate-limited per client IP (`TOOLS_RATE_LIMIT`, default 120/60 s) |
+| PUT | `/policy` | owner edit of `per_order_cap`, `daily_cap`, `hard_max_per_order`, `allowed_categories`, `allowed_merchants`, `blocked_merchants` (only the fields to change). Needs `X-Owner-Token`; validated server-side (amounts with ≤ 2 decimals, per-order ≤ daily ≤ …, hard max ≥ per-order, non-empty allowlists, no merchant both allowed and blocked) → `422` with the reason, nothing changes. Send `GET /policy`'s `revision` as `If-Match` (the dashboard does): if the policy changed meanwhile → `409`, nothing changes |
 | GET | `/policy/history` | owner edits, newest first (who, when, each field from → to) |
 | GET | `/spend/history?days=14` | captured / reserved / total per day (1–90 days, policy timezone) for the spend chart |
 
@@ -524,9 +525,11 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
   still awaiting buyer approval. Anyone who obtains that cancel URL (it is in the buyer's PayPal redirect)
   can cancel that one unpaid order. Do not expose the app on a public network.
 - **The MCP / `/tools` surface has the same local-demo scope.** `POST /tools/{name}` is open to anyone who
-  can reach the server (like `/agent/request`), rate-limited per IP. Split-order aggregation is per MCP
-  session id; a client that starts new sessions (or omits the id on the REST endpoint) is judged per order,
-  and the daily cap is the backstop. The MCP server forwards calls without its own authentication.
+  can reach the server (like `/agent/request`), rate-limited per IP; the MCP server forwards calls without
+  its own authentication. Split-order aggregation for external agents covers the same SKU at the same
+  merchant within one policy day (different SKUs are judged per order; the daily cap is the backstop), and
+  it is deliberately stricter than for `/agent/request`: two separate same-SKU purchases on one day count
+  together toward the per-order cap.
 - **Policy edits are global and owner-token based.** One owner token (or the approver token when
   `POLICY_OWNER_TOKEN` is unset, so in that setup approvers can also change the policy); the change history
   keeps the last 200 edits in the database and records "owner", not a person. Currency and timezone are not

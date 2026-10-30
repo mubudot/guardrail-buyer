@@ -86,7 +86,7 @@ def test_unknown_tool_and_ids_are_refused(tools):
     assert tools.call("check_policy", {"product_id": "P-9999", "quantity": 1})["code"] == "NOT_FOUND"
 
 
-@pytest.mark.parametrize("sid", ["", "mcp-XYZ", "abc", "mcp-0123456789ABCDEF", 5])
+@pytest.mark.parametrize("sid", ["", "mcp-XYZ", "abc", "mcp-0123456789ABCDEF", 5, "mcp-0123456789abcdef\n"])
 def test_session_id_is_validated(tools, sid):
     assert tools.call("check_policy", {"product_id": "P-1001", "quantity": 1}, sid)["code"] == "INVALID_ARGUMENTS"
 
@@ -125,8 +125,8 @@ def test_over_cap_needs_a_human_and_approval_status_is_visible(tools, service):
     assert st["result"] == "APPROVED" and st["order"]["status"] == "COMPLETED"
 
 
-def test_session_aggregates_split_orders_for_the_hard_maximum(tools, service):
-    """Two 329.00 monitors in one MCP session: each is only over the soft cap, but the second
+def test_split_approvals_are_aggregated_for_the_hard_maximum(tools, service):
+    """Two 329.00 monitors requested by an external agent: each is only over the soft cap, but the second
     approval would push the same SKU past the 500.00 hard maximum and is refused."""
     a1 = ok(tools.call("request_approval", {"product_id": "P-1004", "quantity": 1, "justification": "monitor"}, SID))
     a2 = ok(tools.call("request_approval", {"product_id": "P-1004", "quantity": 1, "justification": "monitor"}, SID))
@@ -135,19 +135,35 @@ def test_session_aggregates_split_orders_for_the_hard_maximum(tools, service):
     assert ok(tools.call("get_approval_status", {"approval_id": a2["approval_id"]}))["result"] == "DENIED_BY_POLICY"
 
 
-def test_split_orders_in_one_session_count_as_one_purchase(tools, service):
-    """Splitting 3 x 24.50 into single orders in one session: the third would make the same
-    SKU 73.50 > per-order cap 50, so it needs a human like one 3-unit order would."""
-    results = [ok(tools.call("create_order", {"product_id": "P-1002", "quantity": 1}, SID))["result"]
-               for _ in range(3)]
+def test_split_orders_count_as_one_purchase_across_sessions(tools, service):
+    """Splitting 3 x 24.50 into single orders, even from different MCP sessions or without a
+    session id: the third would make the same SKU 73.50 > per-order cap 50 today, so it needs
+    a human like one 3-unit order would. The grouping is server-chosen (one per policy day)."""
+    results = [ok(tools.call("create_order", {"product_id": "P-1002", "quantity": 1}, sid))["result"]
+               for sid in ("mcp-0000000000000001", "mcp-0000000000000002", None)]
     assert results == ["ORDER_PLACED", "ORDER_PLACED", "NEEDS_APPROVAL"]
+    assert {o["request_id"] for o in service.store.list("orders")} == {"ext-2026-10-30"}
 
 
-def test_daily_cap_bounds_many_small_orders_without_a_session(tools, service):
-    results = [ok(tools.call("create_order", {"product_id": "P-1002", "quantity": 1}))["result"]
-               for _ in range(8)]  # 8 x 24.50 = 196 > daily cap 150
-    assert results[:6] == ["ORDER_PLACED"] * 6 and set(results[6:]) == {"NEEDS_APPROVAL"}
-    assert service.spent_today() == Decimal("147.00")
+def test_rotating_sessions_cannot_split_past_the_hard_maximum(tools, service):
+    service.update_policy({"per_order_cap": "500", "daily_cap": "1000"})  # caps loose, hard max 500
+    r = [ok(tools.call("create_order", {"product_id": "P-1004", "quantity": 1}, f"mcp-{i:016x}"))["result"]
+         for i in range(2)]  # 2 x 329.00 monitors from two "sessions"
+    assert r == ["ORDER_PLACED", "DENIED"] and service.spent_today() == Decimal("329.00")
+
+
+def test_daily_cap_bounds_many_small_orders(tools, service):
+    picks = [("P-1002", 1), ("P-3001", 1), ("P-4001", 1), ("P-3002", 1), ("P-1001", 1), ("P-2002", 2)]
+    results = [ok(tools.call("create_order", {"product_id": p, "quantity": q}))["result"]
+               for p, q in picks]  # 24.50+28+20+35+12.99 = 120.49, then 19.98 -> 140.47, ok
+    assert results == ["ORDER_PLACED"] * 6
+    r = ok(tools.call("create_order", {"product_id": "P-2001", "quantity": 2}))  # +14.98 > 150
+    assert r["result"] == "NEEDS_APPROVAL" and service.spent_today() == Decimal("140.47")
+
+
+@pytest.mark.parametrize("bad", [10 ** 400, 1e30, 1000000.01])
+def test_search_rejects_huge_max_price(tools, bad):
+    assert tools.call("search_catalog", {"query": "", "max_price": bad})["code"] == "INVALID_ARGUMENTS"
 
 
 def test_results_expose_only_public_order_fields(tools, service):

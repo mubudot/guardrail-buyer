@@ -70,7 +70,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
      "inputSchema": {"type": "object", "additionalProperties": False, "required": ["query"], "properties": {
          "query": {"type": "string", "maxLength": 200, "description": "keywords, e.g. 'usb cable'"},
          "category": {"type": "string", "maxLength": 64},
-         "max_price": {"type": "number", "minimum": 0}}},
+         "max_price": {"type": "number", "minimum": 0, "maximum": 1000000}}},
      "annotations": {"readOnlyHint": True, "openWorldHint": False}},
     {"name": "check_policy", "title": "Dry-run the spend policy",
      "description": "Dry-run the spend policy for a product and quantity: ALLOW, NEEDS_APPROVAL or DENY with "
@@ -148,28 +148,30 @@ def validate_args(name: str, args: Any) -> dict[str, Any]:
             if isinstance(v, bool) or not isinstance(v, int) or not (p["minimum"] <= v <= p["maximum"]):
                 raise ToolInputError(f"{k} must be a whole number between {p['minimum']} and {p['maximum']}")
         elif t == "number":
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
-                    or v < p.get("minimum", -math.inf):
-                raise ToolInputError(f"{k} must be a finite non-negative number")
+            if isinstance(v, bool) or not isinstance(v, (int, float)) \
+                    or (isinstance(v, float) and not math.isfinite(v)) \
+                    or not (p.get("minimum", -math.inf) <= v <= p.get("maximum", math.inf)):
+                raise ToolInputError(f"{k} must be a number between {p.get('minimum')} and {p.get('maximum')}")
     return args
 
 
 class GuardedTools:
-    """Dispatch validated tool calls to BuyerService. `session_id` (an `mcp-<16 hex>`
-    id the MCP server generates once per process) ties the calls of one agent session
-    together, so split orders of the same SKU at the same merchant count as one purchase
-    for the aggregate hard maximum."""
+    """Dispatch validated tool calls to BuyerService.
+
+    Anti-splitting for external agents: every order placed through these tools is tagged
+    with one server-chosen group per policy day (`ext-<day>`), so same-SKU orders at the same
+    merchant count together toward the per-order cap and the hard maximum for the whole day,
+    across MCP sessions and REST callers. The client cannot choose or rotate it. The optional
+    `session_id` (an `mcp-<16 hex>` id the MCP server generates per process and prints in its
+    stderr log) is validated but never used for policy decisions, so it cannot loosen them."""
 
     def __init__(self, service: BuyerService):
         self.service = service
 
-    @staticmethod
-    def request_id(session_id: str | None) -> str | None:
-        if session_id is None:
-            return None
-        if not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id):
+    def request_id(self, session_id: str | None) -> str:
+        if session_id is not None and (not isinstance(session_id, str) or not SESSION_RE.fullmatch(session_id)):
             raise ToolInputError("session_id must look like mcp-<16 lowercase hex>")
-        return session_id
+        return f"ext-{self.service._today()}"
 
     def call(self, name: str, args: Any, session_id: str | None = None) -> dict[str, Any]:
         """Returns {"ok": True, "result": {...}} or {"ok": False, "error": "..."}; policy

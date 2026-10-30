@@ -8,7 +8,7 @@
     {key: "hard_max_per_order", label: "Hard max per order", effect: "above → DENY (never escalated)"},
   ];
   const LISTS = ["allowed_categories", "allowed_merchants", "blocked_merchants"];
-  let server = null, draft = null, catalog = [], chart = null, chartLoading = null, loadedOnce = false;
+  let server = null, draft = null, revision = null, catalog = [], chart = null, chartLoading = null, loadedOnce = false;
   const ownerInput = $("owner-token");
   ownerInput.value = sessionStorage.getItem("ownerToken") || "";
   ownerInput.addEventListener("change", () => sessionStorage.setItem("ownerToken", ownerInput.value));
@@ -119,12 +119,17 @@
     overlayNoRowsTemplate: "<span class='hint'>No owner edits yet: the policy is the one from policy.yaml</span>",
   });
 
+  const editing = () => [capsGrid, merchantsGrid, categoriesGrid].some((g) => g.getEditingCells().length > 0);
+  const dirty = () => draft && Object.keys(changedFields()).length > 0;
   async function loadPolicy(force = false) {
-    if (draft && !force && Object.keys(changedFields()).length) return;  // never clobber unsaved edits
+    // never clobber unsaved edits or an open cell editor; a poll only redraws on a new revision
+    if (!force && (dirty() || editing())) return;
     const [p, cat, hist] = await Promise.all([api("/policy"), catalog.length ? catalog : api("/catalog"), api("/policy/history")]);
+    if (!force && (dirty() || editing())) return;  // the user started editing while we were loading
+    if (!force && p.revision === revision) return;
     catalog = cat;
     server = {}; for (const k of [...CAPS.map((c) => c.key), ...LISTS]) server[k] = p[k];
-    draft = clone(server);
+    draft = clone(server); revision = p.revision;
     merchantsGrid.setGridOption("rowData", listRows("merchant", ["allowed_merchants", "blocked_merchants"]));
     categoriesGrid.setGridOption("rowData", listRows("category", ["allowed_categories"]));
     historyGrid.setGridOption("rowData", hist);
@@ -137,11 +142,17 @@
     const btn = $("policy-save"); btn.disabled = true;
     try {
       const r = await api("/policy", {method: "PUT", body: JSON.stringify(body), headers: {
-        "content-type": "application/json", "X-Owner-Token": ownerInput.value || tokenInput.value}});
+        "content-type": "application/json", "X-Owner-Token": ownerInput.value || tokenInput.value,
+        "If-Match": revision}});
       toast(r.result === "UPDATED" ? `Policy saved (${Object.keys(r.change.changes).join(", ")})` : "Nothing changed");
       await loadPolicy(true);
       refresh(); loadChart();
-    } catch (e) { toast("Policy not saved: " + e.message); renderDirty(); }
+    } catch (e) {
+      if (/changed by someone else/.test(e.message)) {  // 409: another owner saved first
+        toast("Policy not saved: it was changed meanwhile. Reloaded the current policy; apply your edit again.");
+        await loadPolicy(true).catch(() => {});
+      } else { toast("Policy not saved: " + e.message); renderDirty(); }
+    }
   });
 
   /* ---------- spend over time (AG Charts Community) ---------- */

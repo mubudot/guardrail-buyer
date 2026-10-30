@@ -27,7 +27,7 @@ from .agent import LLMError, PurchasingAgent  # noqa: E402
 from .offline_agent import OfflineAgent, make_agent  # noqa: E402
 from .guardrails import Policy  # noqa: E402
 from .paypal_client import MockPayPal, PayPalError, make_client  # noqa: E402
-from .service import BuyerService, Catalog, MockLockError  # noqa: E402
+from .service import BuyerService, Catalog, MockLockError, PolicyConflict  # noqa: E402
 from .tool_gateway import TOOL_NAMES, TOOL_SPECS, GuardedTools  # noqa: E402
 
 log = logging.getLogger("guardrail")
@@ -190,15 +190,20 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
 
     @app.get("/policy")
     def get_policy():
-        return {**svc.sync_policy().to_dict(), "spent_today": str(svc.spent_today()), "day": svc._today()}
+        return {**svc.sync_policy().to_dict(), "spent_today": str(svc.spent_today()), "day": svc._today(),
+                "revision": svc.policy_revision()}
 
     @app.put("/policy", dependencies=[Depends(require_owner)])
-    def put_policy(body: dict):
+    def put_policy(body: dict, if_match: str | None = Header(default=None)):
         """Owner edit of the caps / allowlists (X-Owner-Token). Validated server-side; only
         per_order_cap, daily_cap, hard_max_per_order, allowed_categories, allowed_merchants and
-        blocked_merchants are editable. Invalid -> 422 with the reason; nothing changes."""
+        blocked_merchants are editable. Invalid -> 422 with the reason; nothing changes.
+        Optimistic concurrency: send the `revision` from GET /policy as `If-Match` (the
+        dashboard does); a policy changed meanwhile -> 409, nothing changes."""
         try:
-            return svc.update_policy(body)
+            return svc.update_policy(body, base_revision=if_match.strip('"') if if_match else None)
+        except PolicyConflict as e:
+            raise HTTPException(409, str(e))
         except ValueError as e:
             raise HTTPException(422, str(e))
 
