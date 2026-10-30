@@ -193,3 +193,23 @@ documented. One Codex release review (judge-readability, modularity, correctness
 | RC5 | Codex (must-fix) | `scripts/sandbox_smoke.py` ignored `.env` and defaulted to `PAYPAL_AUTH=proxy`. | Loads `.env` like the app (unless `GRB_NO_DOTENV=1`); OAuth stays the default. |
 | RC6 | Codex (should-fix) | `app/service.py` was 1,037 lines mixing payments, audit views and policy admin. | Split into `app/reporting.py` (audit/spend views) and `app/policy_admin.py` (owner policy edits) as mixins; order statuses moved to `app/store.py`; `service.py` keeps reservation/capture/approval orchestration (743 lines). Public API unchanged. |
 | RC7 | Codex (should-fix/nit) | Stale counts in REQUIREMENTS_CHECK, DEVPOST step reference. | Updated to 414 (412 passed + 2 skipped). |
+
+## Dashboard polish + demo video v2 (2026-10-30)
+
+Dashboard polish (2e39522) reviewed by Codex in three UI passes with headless Chromium and the vendored AG Grid in
+jsdom; video v2 reviewed by Codex in two passes. Reports kept outside the repo.
+
+| ID | Source | Finding | Fix |
+| --- | --- | --- | --- |
+| U1 | Codex UI pass 1 | 15 findings (double Ctrl+Enter submit, capture ids as HTML, escalation counts, "unpaid" wording for unconfirmed payments, one connection flag for all resources, Tab skipping grid buttons, polling destroying focus, dialog re-entry, endless first-load spinner, contrast, long tool trace, clipped pill, toast over dialog, phone-width ids, unclear demo example). | 91ae591 (+tests). |
+| U2 | Codex UI pass 2 | Checkout URL check accepted `null` (opened `/null`) and any http(s) host. | `safeUrl` accepts only https `paypal.com` / subdomains or the app's own `/paypal/mock-checkout` (same origin or loopback); a checkout opens only for `PAYER_ACTION_REQUIRED` (143f547, +12 URL cases, jsdom open check). |
+| U3 | Codex UI pass 2 | Outcome list keyed by product hid a second purchase of the same product. | One line per purchase attempt (product + quantity); intermediate calls collapse; finished attempts stay separate. Policy dry-run denies (e.g. a gift card refused at `check_policy` with no order call) are listed too (143f547, +node test). |
+| U4 | Codex UI pass 2 | "Could not load" stayed after recovery; an audit that never loaded said "No guardrail decisions yet". | Separate error / loaded state per resource; error overlay on a failed first load (143f547). |
+| U5 | Codex UI pass 2 | Shift+Tab skipped the Approve / Reject buttons. | Backward entry focuses the last control, then the previous one, then leaves the cell (143f547, jsdom test; checked in Chromium). |
+| U6 | Codex UI pass 2 | At 390 px Approve and Pay were off screen. | Below 700 px technical columns hide, the action column is pinned right and a "swipe sideways" cue appears when columns still overflow (143f547; Chromium: Approve at x=174, Pay at x=192 inside the 27–363 px grid). |
+| U7 | Codex UI pass 3 | AG Grid keeps a mounted overlay when its template changes, so the U4 text still did not change on screen. | Re-show the no-rows overlay after changing the template; the jsdom test now asserts the rendered overlay text (ce25429; the test fails with the re-show removed). |
+| V1 | Codex video pass 1 | No P1/P2. P3: brief dashboard reload flash at the end of the inserted clip. | The clip's last COMPLETED frame is held until the closing card. Other P3s left (captions briefly over the spend legend; the capture-before-approval sentence is narrated, shown in `docs/SANDBOX_E2E.md` / `scripts/sandbox_smoke.py`; PayPal's fake Sandbox persona details). |
+| V2 | Codex video pass 2 | No P1/P2; splice clean. | — |
+
+Counts after these changes: 421 tests — `418 passed, 3 skipped` with Python + node (no jsdom), `420 passed, 1 skipped`
+with jsdom, `415 passed, 6 skipped` without node. Video v2: 2:18 (138.4 s), OCR-checked (1 fps).

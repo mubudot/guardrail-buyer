@@ -1,8 +1,40 @@
-# Demo video script — GuardRail Buyer (final cut 2:24, hard limit < 3:00)
+# Demo video script — GuardRail Buyer (v2 cut 2:18, hard limit < 3:00)
 
-No music (narration only). Voice in the draft: Piper TTS, voice `en_US-libritts_r-medium`
-(trained on LibriTTS-R, CC BY 4.0, credited on the closing card). Only on-screen brands: PayPal's own
-Sandbox checkout (the sponsor's product), AG Grid (sponsor), Claude (named as the model used).
+No music (narration only). Voice: Piper TTS, voice `en_US-libritts_r-medium` (trained on LibriTTS-R, CC BY 4.0,
+credited on the closing card). Only on-screen brands: PayPal's own Sandbox checkout (the sponsor's product), AG Grid
+(sponsor), Claude (named as the model used). Narration text lives in `scripts/video/scenes.json`; keep it in sync
+with this file.
+
+## v2 cut (2026-10-30, current)
+
+2:18 (138.4 s), 1280×720, H.264 + AAC, kept outside the repo. Order: scenes 1–7 are one live take of the polished
+dashboard (`scripts/video/record_demo.py --skip-checkout`) against the **real PayPal Sandbox API** with **Claude
+(`claude-sonnet-5-5`)** as the agent; `scripts/video/assemble.py` builds that part (3 s of model wait cut). Scene 8
+is the real Sandbox buyer approval cut from the earlier take (below), labelled on screen as recorded earlier, narrated
+with the `s5_checkout` / `s5_return` lines, and placed **before the closing card**, after the approval and cancel
+scenes, so the live scenes never contradict the clip's order state. The insertion (cut, label, narration, concat) is a one-off ffmpeg step
+kept outside the repo; everything else is reproducible with `scripts/video/make_demo.sh`. Checks: frame-by-frame contact sheet, OCR
+(tesseract, 1 fps, 138 frames: no personal email, name, client id, key, password or tunnel URL; visible are Sandbox
+order / capture ids, the checkout `token=` which is the Sandbox order id, and PayPal's own fake Sandbox persona
+"John Doe" with test funding sources), and two Codex video passes (both "no material issues"; remaining P3s:
+captions briefly cover the spend legend at 0:54–1:04, the capture-before-approval sentence in scene 7 is narrated
+but not shown on screen — it is covered by `scripts/sandbox_smoke.py` and `docs/SANDBOX_E2E.md`).
+
+| # | Time | On screen | Narration |
+|---|---|---|---|
+| 1 | 0:00–0:11 | Title card: "GuardRail Buyer — an AI purchasing agent that pays with PayPal, but only inside the spend guardrails you set." | AI agents are starting to buy things for us. But handing an agent your PayPal account is risky. GuardRail Buyer lets an AI agent shop for your team and pay with PayPal, but only inside the spend limits you set. |
+| 2 | 0:11–0:26 | Policy card: ALLOW / NEEDS APPROVAL / DENY with the default caps ($50 per order, $150 per day, $500 hard max). | Between the language model and the wallet sits a deterministic policy engine. Orders under the per-order cap and the daily budget go straight to PayPal. Anything over a cap waits for a human. Blocked merchants, blocked categories, and anything above a hard maximum are refused outright. The model cannot argue its way past that. |
+| 3 | 0:26–0:38 | Live dashboard on the real Sandbox: header chips `PayPal Sandbox` · `Agent: claude-sonnet-5-5` · approver token state; four summary cards (spend vs daily cap with captured / reserved bar, pending approvals, blocked attempts, auto-approved). Caption: "Live dashboard · PayPal mode: Sandbox (api-m.sandbox.paypal.com)". | This is the dashboard, built with AG Grid, running against the real PayPal Sandbox. The summary cards show today's spend against the daily cap, split into captured and reserved money, plus pending approvals and blocked attempts. |
+| 4 | 0:38–0:54 | The mixed request is typed into *Ask the agent* → Send; caption lists the tool chain. (3 s of model thinking time are cut.) | Let's ask the agent, Claude, for a mixed order: two USB-C cables and a mechanical keyboard for a new hire, plus a one hundred dollar gift card. The agent searches the catalog, dry-runs the policy, and places orders through our server. It never calls PayPal directly. |
+| 5 | 0:54–1:08 | Agent's answer with the outcome list (cables `AWAITING PAYER APPROVAL` $25.98, keyboard `APPROVAL REQUESTED`, gift card `DENIED` — refused at the policy check) and the collapsible trace of all tool calls; cards update (reserved $25.98, 1 pending, 1 blocked, 1 auto-approved); Orders row with **Pay with PayPal**. | The cables fit the policy, so a real PayPal Sandbox order is created and the budget is reserved. The keyboard is over the fifty dollar per-order cap, so the agent files an approval request with its justification. The gift card is refused: blocked merchant and category. |
+| 6 | 1:08–1:22 | Pending approvals row (justification, rule hit) → **Approve** → confirmation dialog (item, amount, merchant, rule hit, agent's justification, what happens next) → *Approve & create PayPal order* → new order awaiting the buyer. | Now the human in the loop. The keyboard request shows the agent's justification and exactly which rule it hit. A confirmation dialog shows what I am approving, and with the approver token, I approve it. The server re-checks the deny rules, then creates a new PayPal order for the buyer. |
+| 7 | 1:22–1:36 | The keyboard's real Sandbox checkout → "Cancel and return" → back in the app: toast "Buyer cancelled … reserved budget released", order `CANCELLED`. | Unpaid orders count against the daily budget, so an agent cannot open lots of small orders to dodge the cap. If the buyer cancels on PayPal, the reservation is released. And a capture attempted before the buyer approves is rejected by PayPal, and changes nothing. |
+| 8 | 1:36–2:03 | **Inserted clip, recorded earlier the same day with the previous dashboard design**, labelled top-right "Sandbox buyer approval — recorded 2026-10-30": Pay with PayPal → real Sandbox login (buyer email blurred, password masked) → review $25.98 → **Pay** → `/paypal/return` → toast "Payment returned from PayPal … COMPLETED", order `ORD-F79F379F1E` `COMPLETED` with capture `14579671MH105231J`; the last frame is held until the closing card. | Paying works the same way for real. In this clip, recorded earlier the same day, Pay with PayPal opens the real Sandbox checkout for the two USB-C cables, and a Sandbox test buyer logs in and approves the payment. PayPal redirects back to our app, which captures the payment. The order turns completed, with its PayPal capture ID, and the reserved amount becomes captured spend. |
+| 9 | 2:03–2:18 | Closing card: stack, MIT, 400+ automated tests, `AGENT_MODE=offline`, TTS credit. | GuardRail Buyer is built with Claude tool use, PayPal Orders version two in the Sandbox, FastAPI, and AG Grid. It is open source, with more than four hundred automated tests, and an offline mode lets judges run the whole flow without an AI key. Let agents spend, inside your guardrails. |
+
+Times are for the v2 cut.
+
+## Earlier take (2:24, source of the scene-8 clip)
 
 The video is produced by `scripts/video/make_demo.sh` (TTS → app in Sandbox mode with Claude → headless
 Chromium recording via Playwright → ffmpeg). Output: `docs/demo_draft.mp4` (not committed). Narration text lives
@@ -27,22 +59,7 @@ replaced: the card was re-rendered from `CARDS["s8_close"]` in `record_demo.py` 
 narration re-synthesized from `scenes.json` with the same Piper voice and settings, placed 0.25 s after the card
 starts (as `assemble.py` does). Everything before 2:08.2 is the same footage and audio as the 2:23 cut.
 
-| # | Time (approx.) | On screen | Narration |
-|---|---|---|---|
-| 1 | 0:00–0:11 | Title card: "GuardRail Buyer — an AI purchasing agent that pays with PayPal, but only inside the spend guardrails you set." | AI agents are starting to buy things for us. But handing an agent your PayPal account is risky. GuardRail Buyer lets an AI agent shop for your team and pay with PayPal, but only inside the spend limits you set. |
-| 2 | 0:11–0:27 | Policy card: ALLOW / NEEDS APPROVAL / DENY table with the default caps ($50 per order, $150 per day, $500 hard max). | Between the language model and the wallet sits a deterministic policy engine. Orders under the per-order cap and the daily budget go straight to PayPal. Anything over a cap waits for a human. Blocked merchants, blocked categories, and anything above a hard maximum are refused outright. The model cannot argue its way past that. |
-| 3 | 0:27–0:37 | Dashboard (AG Grid), header shows `PayPal: sandbox · claude-sonnet-5-5`; KPI tiles. Caption: "Live dashboard · PayPal mode: Sandbox". | This is the dashboard, built with AG Grid, running against the real PayPal Sandbox. Up top: today's captured spend, money reserved for unpaid orders, and the remaining daily headroom. |
-| 4 | 0:37–0:52 | Typing into *Ask the agent*: "Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card as a welcome present." → Send. Caption lists the tool chain. (The model's thinking time is cut.) | Let's ask the agent, Claude, for a mixed order: two USB-C cables and a mechanical keyboard for a new hire, plus a one hundred dollar gift card. The agent searches the catalog, dry-runs the policy, and places orders through our server. It never calls PayPal directly. |
-| 5 | 0:52–1:06 | Agent answer + tool steps; scroll to Pending approvals and Orders (cables `AWAITING PAYER` with **Pay with PayPal**, keyboard approval, no gift-card order). | The cables fit the policy, so a real PayPal Sandbox order is created and the budget is reserved. The keyboard is over the fifty dollar per-order cap, so the agent files an approval request with its justification. The gift card is refused: blocked merchant and category. |
-| 6 | 1:06–1:10 | Click **Pay with PayPal** → real `www.sandbox.paypal.com/checkoutnow` page for that order. | Pay with PayPal opens the real PayPal Sandbox checkout for that order. The buyer logs in with a Sandbox test account and approves the payment. |
-| 7 | 1:10–1:37 | Real footage: log in with the Sandbox *personal* test account (email blurred, password masked), review $25.98 → **Pay** → redirected to `/paypal/return` → dashboard toast "Payment returned from PayPal … COMPLETED", Orders row `COMPLETED` with capture id `14579671MH105231J`, KPI "Spent today (captured)" = $25.98, reserved $0.00. Captions: "Buyer logs in with the Sandbox personal test account" → "Review the $25.98 Sandbox payment → Pay" → "PayPal redirects to /paypal/return → the app captures → COMPLETED" → "Order COMPLETED with its PayPal capture id · reserved → captured spend". | PayPal redirects back to our app, which captures the payment. The order turns completed, with its PayPal capture ID, and the reserved amount becomes captured spend. |
-| 8 | 1:37–1:50 | Pending approvals row (justification + "amount 89.00 exceeds per-order cap 50.00 USD") → **Approve** with the approver token → toast, new order awaiting the buyer. | Now the human in the loop. The keyboard request shows the agent's justification and exactly which rule it hit. With the approver token, I approve it. The server re-checks the deny rules, then creates a new PayPal order for the buyer. |
-| 9 | 1:50–2:08 | Open the keyboard's Sandbox checkout → click "Cancel and return" (or "Return to Test Store" when the buyer is already logged in) → back in the app: toast "Buyer cancelled … reserved budget released", order `CANCELLED`. | Unpaid orders count against the daily budget, so an agent cannot open lots of small orders to dodge the cap. If the buyer cancels on PayPal, the reservation is released. And a capture attempted before the buyer approves is rejected by PayPal, and changes nothing. |
-| 10 | 2:08–2:24 | Closing card: stack, MIT, 400+ automated tests, `AGENT_MODE=offline`, TTS credit. | GuardRail Buyer is built with Claude tool use, PayPal Orders version two in the Sandbox, FastAPI, and AG Grid. It is open source, with more than four hundred automated tests, and an offline mode lets judges run the whole flow without an AI key. Let agents spend, inside your guardrails. |
-
-Times in the table are approximate for the final cut (scene 4's model wait is cut). Total narration ≈ 1:55.
-
-## Scene 7 (buyer approval)
+## Buyer approval recording (scene 7 of the earlier take, scene 8 of v2)
 
 Recorded automatically when `SANDBOX_BUYER_EMAIL` / `SANDBOX_BUYER_PASSWORD` are set (developer.paypal.com →
 Testing Tools → Sandbox Accounts → the *personal* account → View/Edit account). Pass them as env vars for that one

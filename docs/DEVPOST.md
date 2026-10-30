@@ -95,8 +95,8 @@ tab were added after recording (README: "Use it from any MCP agent" and the Poli
   owner saved first, change history) and a spend-over-time chart).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 400+ automated pytest tests (414 at the 2026-10-30 release check: 411 run with Python alone; 1 dashboard-logic test needs node, 1 headless UI
-  test needs node + jsdom, 1 interop test needs the official MCP SDK): guardrails, payment flow, reservations/expiry, ambiguous PayPal outcomes and
+- **Tests:** 400+ automated pytest tests (421 after the dashboard polish on 2026-10-30: 415 run with Python alone; 3 dashboard-logic tests need node, 2 headless UI
+  tests need node + jsdom, 1 interop test needs the official MCP SDK): guardrails, payment flow, reservations/expiry, ambiguous PayPal outcomes and
   reconciliation, API, agent loop with a scripted fake LLM, offline mode, thread/barrier concurrency tests
   for budget races, double approvals and cancel-vs-capture, MCP protocol + end-to-end stdio sessions
   (embedded and against a running server, prompt-injection attempts included), policy-edit validation, plus
@@ -131,8 +131,9 @@ tab were added after recording (README: "Use it from any MCP agent" and the Poli
   tools; it never chooses prices or merchants (they come from the server catalog), cannot escalate a
   DENY, cannot reuse an approval or change its amount, and cannot get around the caps by firing
   requests in parallel or by splitting one item into several orders within a request.
-- The demo video shows a second real run end to end (order `ORD-F79F379F1E` → PayPal capture
-  `14579671MH105231J`, `COMPLETED`): the Sandbox buyer logs in and pays on PayPal on screen.
+- The demo video (2:18) is a live run of the current dashboard against the real PayPal Sandbox with Claude, and it
+  ends with a clip from a second real run recorded earlier the same day and labelled on screen (order `ORD-F79F379F1E`
+  → PayPal capture `14579671MH105231J`, `COMPLETED`): the Sandbox buyer logs in and pays on PayPal.
 - Any MCP agent can now be given a budget instead of a wallet: a live Codex session that deliberately tried
   every injected instruction got `DENIED` / `INVALID_ARGUMENTS` from the server for each one
   (`docs/MCP_LIVE_SMOKE.md`).
@@ -196,7 +197,7 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 412 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
+python -m pytest -q                      # 418 passed, 3 skipped (2 jsdom UI tests, MCP SDK interop), no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card

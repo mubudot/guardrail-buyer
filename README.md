@@ -161,7 +161,7 @@ export PORT=8000                   # any free port; if it is busy, pick another 
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
 
-python -m pytest -q                                     # -> 412 passed, 2 skipped (jsdom UI test, optional MCP SDK interop; 3 skipped without node)
+python -m pytest -q                                     # -> 418 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 415 passed, 6 skipped)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -273,7 +273,7 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `412 passed, 2 skipped` (no network, no API key needed; the skips need jsdom / the official `mcp` SDK; without `node` one more test is skipped).
+1. **Run the tests** — `python -m pytest -q` → see `418 passed, 3 skipped` (421 tests; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` three more node-only tests are skipped: `415 passed, 6 skipped`).
 2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
@@ -472,7 +472,8 @@ Chromium (Playwright) drives the dashboard and records the screen → ffmpeg cut
 time and lays the narration on top → `docs/demo_draft.mp4`. No music. The Sandbox buyer login (scene 7) is
 recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_EMAIL` /
 `SANDBOX_BUYER_PASSWORD` (environment only); without them scene 7 is a labelled placeholder card
-(see `docs/VIDEO_SCRIPT.md`).
+(see `docs/VIDEO_SCRIPT.md`). The submitted 2:18 cut is a `--skip-checkout` take of the current dashboard
+(real Sandbox + Claude) followed by the real buyer-approval clip from an earlier take, labelled on screen.
 
 ## REST API
 
@@ -546,7 +547,7 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 - [x] AG Grid **Audit** tab: every guardrail decision with column filters, quick search, risk highlighting, CSV export and a detail panel (quote, rules evaluated, payment timeline)
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
 - [x] Bring your own model: Anthropic Messages or any OpenAI-compatible endpoint (`LLM_PROVIDER`)
-- [x] Demo video: final cut 2:24 with the real Sandbox buyer approval (YouTube link on the Devpost page)
+- [x] Demo video (2:18): live run of the current dashboard against the real PayPal Sandbox with Claude, plus the real Sandbox buyer approval clip recorded earlier the same day (labelled on screen), placed before the closing card (YouTube link on the Devpost page)
 - [x] MCP server: the guarded tools for any MCP agent (Claude Desktop, Codex …), remote + embedded offline modes, prompt-injection tests, live Codex run ([`docs/MCP_LIVE_SMOKE.md`](docs/MCP_LIVE_SMOKE.md)) — added after the video was recorded
 - [x] AG Grid **Policy & spend** tab: owner-token protected policy editor with server validation and change history, spend-over-time chart (AG Charts Community) — added after the video was recorded
 - [ ] PayPal webhooks (`CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`) with signature verification
