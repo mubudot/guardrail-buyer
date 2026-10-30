@@ -90,3 +90,33 @@ Request: *"Order 2 USB-C cables for the new hire's desk"*. 4 model turns, `stop_
   claims a purchase while any order of the run is not `COMPLETED`, the summary is replaced by the deterministic one
   built from the tool results ("order created, awaiting buyer approval", "payment outcome unconfirmed", "PayPal order
   failed", or "bought and paid"). Tests in `tests/test_agent.py`.
+
+## Second run: the demo-video recording (2026-10-30, ~08:08–08:09 Asia/Taipei)
+
+Recorded end to end by `scripts/video/record_demo.py` in headless Chromium against the real Sandbox, with the
+Sandbox buyer's email and password passed only as environment variables (`SANDBOX_BUYER_EMAIL` /
+`SANDBOX_BUYER_PASSWORD`; never printed, logged or written to a file). This is the footage in the demo video's
+scenes 6–7. Same configuration as above (`PAYPAL_AUTH=proxy`, Claude via the gateway), except that the app ran on
+`localhost` and the recording browser was the buyer, so no tunnel was needed for PayPal's redirect.
+
+| | |
+|---|---|
+| Request | *"Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card as a welcome present."* (`REQ-F53FDA2D24`) |
+| Policy | cables `ALLOW` (DEC-07F47682C2), keyboard `NEEDS_APPROVAL` / `per_order_cap` (DEC-715B880197), gift card `DENY` / `merchant_blocklist, category_allowlist` (DEC-E6E3FCE941) |
+| App order (cables) | `ORD-F79F379F1E`, 2 × P-1001, **$25.98 USD**, decision DEC-C23427B143 (RESERVED) |
+| PayPal order | `92G59687LY4126609` |
+| PayPal capture | **`14579671MH105231J`**, `COMPLETED`, `final_capture: true`, 25.98 USD |
+| Payer | Sandbox personal test account (`sb-…@personal.example.com`, blurred in the video) |
+| Keyboard | approval `APR-4791ACF9` approved with the approver token → `ORD-062B118B1C` (PayPal `6PL1130222787443G`), then the buyer used "Return to Test Store" → app `CANCELLED`, reservation released (PayPal keeps that order at `PAYER_ACTION_REQUIRED`; it is never captured) |
+
+Timeline (app `order_events`, Asia/Taipei): 08:08 `CREATING` (reserved 25.98) → `PAYER_ACTION_REQUIRED` →
+08:09 buyer login + **Pay** on `www.sandbox.paypal.com` → `/paypal/return` → `CAPTURING` → `COMPLETED`.
+Afterwards the app's DB showed `status: COMPLETED`, `paypal_status: COMPLETED`, `capture_unknown: 0`, `op_gen: 4`, and
+`GET https://api-m.sandbox.paypal.com/v2/checkout/orders/92G59687LY4126609` returned `status: COMPLETED`, `intent: CAPTURE`,
+capture `14579671MH105231J` / `COMPLETED` / 25.98 USD / `final_capture: true`.
+
+A rehearsal just before it (same day, ~07:44 Asia/Taipei, request *"Order 2 USB-C charging cables for the new hire's desk"*)
+also ended `COMPLETED` on both sides: app `ORD-3AD9607A27`, PayPal order `2WS49113MS447012F`, capture `4PY775905X147260A`
+(25.98 USD). In that rehearsal the first redirect back to `localhost` was sent through the HTTP proxy by Chromium (loopback
+is proxied unless the bypass list has `<-loopback>`, now fixed in `record_demo.py`), so the return URL was re-opened directly;
+the app captured on that request.

@@ -21,7 +21,13 @@ def main():
 
     length = mapped(tl["total"])
     vsel = "+".join(f"between(t,{s:.2f},{e:.2f})" for s, e in cuts)
-    vf = "[0:v]fps=25" + (f",select='not({vsel})',setpts=N/25/TB" if cuts else "") + ",format=yuv420p[v]"
+    pre, cur = "", "vb0"
+    for i, (s0, e0, x, y, w, h) in enumerate(tl.get("blurs", [])):  # hide the Sandbox buyer's email (raw time)
+        pre += (f"[{cur}]split[m{i}][c{i}];[c{i}]crop={w}:{h}:{x}:{y},boxblur=18:4[bx{i}];"
+                f"[m{i}][bx{i}]overlay={x}:{y}:enable='between(t,{s0:.2f},{e0:.2f})'[vb{i + 1}];")
+        cur = f"vb{i + 1}"
+    vf = (f"[0:v]fps=25[vb0];{pre}[{cur}]null" + (f",select='not({vsel})',setpts=N/25/TB" if cuts else "")
+          + ",format=yuv420p[v]")
     inputs, af, labels = ["-i", tl["video"]], [], []
     for i, sc in enumerate(tl["scenes"], start=1):
         wav = b / f"{sc['id']}.wav"

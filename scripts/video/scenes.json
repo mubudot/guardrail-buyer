@@ -10,6 +10,6 @@
     {"id": "s5_return", "narration": "PayPal redirects back to our app, which captures the payment. The order turns completed, with its PayPal capture ID, and the reserved amount becomes captured spend."},
     {"id": "s6_approve", "narration": "Now the human in the loop. The keyboard request shows the agent's justification and exactly which rule it hit. With the approver token, I approve it. The server re-checks the deny rules, then creates a new PayPal order for the buyer."},
     {"id": "s7_cancel", "narration": "Unpaid orders count against the daily budget, so an agent cannot open lots of small orders to dodge the cap. If the buyer cancels on PayPal, the reservation is released. And a capture attempted before the buyer approves is rejected by PayPal, and changes nothing."},
-    {"id": "s8_close", "narration": "GuardRail Buyer is built with Claude tool use, PayPal Orders version two in the Sandbox, FastAPI, and AG Grid. It is open source, with one hundred forty-eight tests, and an offline mode lets judges run the whole flow without an AI key. Let agents spend, inside your guardrails."}
+    {"id": "s8_close", "narration": "GuardRail Buyer is built with Claude tool use, PayPal Orders version two in the Sandbox, FastAPI, and AG Grid. It is open source, with two hundred fifty-six tests, and an offline mode lets judges run the whole flow without an AI key. Let agents spend, inside your guardrails."}
   ]
 }

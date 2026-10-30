@@ -5,12 +5,17 @@ Expects a running app (see make_demo.sh). Each scene lasts at least as long as i
 narration (durations.json from tts.py). Long waits for the agent are logged as cuts
 so assemble.py can remove dead air. Writes <out>/raw.webm and <out>/timeline.json.
 
-The PayPal Sandbox buyer login is NOT automated (the Sandbox test buyer's password
-is not available to this script): the draft shows the real Sandbox checkout page,
-then a clearly labelled placeholder card for that one manual step.
+PayPal Sandbox buyer approval: if SANDBOX_BUYER_EMAIL and SANDBOX_BUYER_PASSWORD are set
+(a Sandbox *personal* test account from developer.paypal.com; pass them only as env vars, they
+are never printed or written), the script logs in on the real Sandbox checkout, clicks Pay and
+follows PayPal's redirect back to /paypal/return. The screen region with the buyer's email is
+logged as a blur window in timeline.json (assemble.py blurs it). Without them, the draft shows
+the real checkout page and then a clearly labelled placeholder card for that manual step.
 """
 import argparse
 import json
+import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -52,7 +57,7 @@ PayPal redirects to <code>/paypal/return</code> → the app captures → order <
 <p><small>Not automated here: the Sandbox buyer password is not available to the recording script.</small></p></div>""",
     "s8_close": """<div class="c"><h1>GuardRail Buyer</h1>
 <p>Claude tool use · PayPal Orders v2 (Sandbox) · FastAPI · AG Grid Community</p>
-<p>Open source (MIT) · 148 tests · <b>AGENT_MODE=offline</b> runs the full flow without an AI key</p>
+<p>Open source (MIT) · 256 tests · <b>AGENT_MODE=offline</b> runs the full flow without an AI key</p>
 <p style="margin-top:28px;font-size:34px;color:#fff"><b>Let agents spend, inside your guardrails.</b></p>
 <p><small>Narration: Piper TTS (voice trained on LibriTTS-R, CC BY 4.0). No music.</small></p></div>""",
 }
@@ -71,7 +76,7 @@ def proxy_settings():
     if not url:
         return None
     pu = urllib.parse.urlparse(url)
-    p = {"server": f"{pu.scheme}://{pu.hostname}:{pu.port}", "bypass": "localhost,127.0.0.1"}
+    p = {"server": f"{pu.scheme}://{pu.hostname}:{pu.port}", "bypass": "<-loopback>,localhost,127.0.0.1"}  # Chromium proxies loopback unless <-loopback>
     if pu.username:
         p.update(username=urllib.parse.unquote(pu.username), password=urllib.parse.unquote(pu.password or ""))
     return p
@@ -80,7 +85,7 @@ def proxy_settings():
 class Recorder:
     def __init__(self, page, durations, t0):
         self.page, self.durs, self.t0 = page, durations, t0
-        self.timeline, self.cuts = [], []
+        self.timeline, self.cuts, self.blurs = [], [], []
 
     def now(self):
         return time.monotonic() - self.t0
@@ -105,6 +110,77 @@ class Recorder:
         self.start(sid)
         self.page.set_content(f"<html><head><style>{CARD_CSS}</style></head><body>{CARDS[sid]}</body></html>")
         self.end()
+
+
+def first_visible(page, sels, timeout_ms):
+    end = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < end:
+        for s in sels:
+            loc = page.locator(s)
+            try:
+                if loc.count() and loc.first.is_visible():
+                    return loc.first
+            except Exception:
+                pass
+        page.wait_for_timeout(250)
+    return None
+
+
+def sandbox_buyer_pay(page, r, base, email, password):
+    """Log in on the real Sandbox checkout, click Pay, follow the redirect back to the app."""
+    r.cap("Buyer logs in with the Sandbox personal test account")
+    b0 = r.now()
+    em = first_visible(page, ["#email", "input[name=login_email]", "input[type=email]"], 30_000)
+    if em is None:
+        raise RuntimeError("Sandbox login: no email field")
+    eb = em.bounding_box()
+    em.click(); em.fill(""); em.type(email, delay=25)
+    nxt = first_visible(page, ["#btnNext", "button:has-text('Next')"], 3000)
+    if nxt:
+        nxt.click()
+    pw = first_visible(page, ["#password", "input[name=login_password]", "input[type=password]"], 30_000)
+    if pw is None:
+        raise RuntimeError("Sandbox login: no password field")
+    pb = pw.bounding_box()
+    # region holding the email field (login step 1) and the email line above the password field (step 2)
+    top = int(min(eb["y"], pb["y"] - 60) - 12)
+    bottom = int(max(eb["y"] + eb["height"], pb["y"] - 2))
+    email_box = [420, max(0, top), 440, bottom - max(0, top)]
+    pw.click(); pw.type(password, delay=40)
+    page.wait_for_timeout(500)
+    first_visible(page, ["#btnLogin", "button:has-text('Log In')", "button[type=submit]"], 5000).click()
+    t_login = r.now()
+    btn, end = None, time.monotonic() + 60
+    while btn is None and time.monotonic() < end:  # the review page's main button is named exactly "Pay"
+        for loc in (page.get_by_role("button", name="Pay", exact=True),
+                    page.get_by_role("button", name="Complete Purchase", exact=True)):
+            try:
+                if loc.count() and loc.first.is_visible():
+                    btn = loc.first
+                    break
+            except Exception:
+                pass
+        else:
+            page.wait_for_timeout(250)
+    if btn is None:
+        raise RuntimeError("Sandbox review page: no Pay button")
+    try:
+        page.wait_for_load_state("networkidle", timeout=10_000)
+    except Exception:
+        pass
+    t_review = r.now()
+    r.blurs.append([round(max(0.0, b0 - 0.5), 2), round(t_review + 0.6, 2), *email_box])  # padded: raw video starts slightly before t0
+    if t_review - t_login > 2.5:  # dead air while PayPal logs in
+        r.cuts.append([round(t_login + 1.0, 2), round(t_review - 0.8, 2)])
+    r.cap("Review the $25.98 Sandbox payment → Pay")
+    page.wait_for_timeout(2500)
+    btn.hover(); page.wait_for_timeout(600)
+    btn.click()
+    t_pay = r.now()
+    page.wait_for_url(base + "/**", timeout=90_000)
+    page.wait_for_selector("#kpis .kpi", timeout=30_000)
+    if r.now() - t_pay > 3.0:
+        r.cuts.append([round(t_pay + 1.2, 2), round(r.now() - 0.6, 2)])
 
 
 def main():
@@ -174,6 +250,8 @@ def main():
         # s5 real Sandbox checkout for the ALLOWed order
         orders = json.loads(LOCAL.open(a.base + "/orders").read())
         cable = next((o for o in orders if o["product_id"] == "P-1001" and o.get("approve_url")), None)
+        buyer = (os.environ.get("SANDBOX_BUYER_EMAIL"), os.environ.get("SANDBOX_BUYER_PASSWORD"))
+        paid = False
         r.start("s5_checkout")
         if cable:
             page.goto(cable["approve_url"], timeout=60_000)
@@ -182,10 +260,26 @@ def main():
             except Exception:
                 pass
             r.cap(f"Real PayPal Sandbox checkout for {cable['id']} (${cable['amount']}) · sandbox, no real money")
+            if all(buyer):
+                page.wait_for_timeout(1500)
+                try:
+                    sandbox_buyer_pay(page, r, a.base, *buyer)
+                    paid = True
+                except Exception as e:
+                    notes.append(f"sandbox buyer login/pay failed: {type(e).__name__}: {str(e).splitlines()[0][:120]}")
         else:
             notes.append("no PAYER_ACTION_REQUIRED cable order found (agent may have chosen differently)")
         r.end()
-        r.card("s5_return")
+        if paid:
+            r.start("s5_return")
+            r.cap("PayPal redirects to /paypal/return → the app captures → COMPLETED")
+            page.wait_for_timeout(3500)
+            page.locator("#orders").scroll_into_view_if_needed()
+            page.wait_for_timeout(1200)
+            r.cap("Order COMPLETED with its PayPal capture id · reserved → captured spend")
+            r.end(pad=1.5)
+        else:
+            r.card("s5_return")
 
         # s6 approve the keyboard
         r.start("s6_approve")
@@ -231,12 +325,13 @@ def main():
                     link.scroll_into_view_if_needed()
                     page.wait_for_timeout(500)
                     link.evaluate("e => e.click()")  # the sticky footer overlaps it in a 720p viewport
-                else:
-                    page.get_by_text("Cancel and return", exact=False).first.click(timeout=8000)
+                else:  # a buyer already logged in sees "Return to Test Store" instead
+                    page.get_by_text(re.compile(r"Cancel and return|Return to ")).first.click(timeout=8000)
                 page.wait_for_url(a.base + "/**", timeout=30_000)
                 page.wait_for_selector("#kpis .kpi")
                 r.cap("Back in the app: order CANCELLED, reserved budget released")
                 page.locator("#orders").scroll_into_view_if_needed()
+                page.wait_for_timeout(3500)  # hold on the result even when the narration is already done
             except Exception as e:
                 notes.append(f"cancel link failed: {e!r}"[:200])
         else:
@@ -253,7 +348,8 @@ def main():
     raw = out / "raw.webm"
     Path(video).replace(raw)
     (out / "timeline.json").write_text(json.dumps(
-        {"video": str(raw), "total": round(total, 2), "scenes": r.timeline, "cuts": r.cuts, "notes": notes}, indent=1))
+        {"video": str(raw), "total": round(total, 2), "scenes": r.timeline, "cuts": r.cuts,
+         "blurs": r.blurs, "notes": notes}, indent=1))
     print(json.dumps({"total": round(total, 1), "cuts": r.cuts, "notes": notes}))
 
 
