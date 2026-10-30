@@ -14,7 +14,8 @@ Modes
   policy. This process holds no PayPal credentials and no approver token; approvals happen
   in the dashboard, payments on PayPal (or the local mock checkout).
 * embedded (default): a self-contained offline sandbox in this process with the local mock
-  PayPal (no network, no key) and an in-memory ledger (MCP_DB_PATH=<file> to persist).
+  PayPal (no network, no key; ALLOW orders are captured at once, there is no buyer step) and an
+  in-memory ledger (MCP_DB_PATH=<file> to persist).
   Real PayPal is refused here on purpose: use remote mode so credentials stay in the server.
 
 In both modes the tool set has no approve / reject / capture / cancel tool, accepts only
@@ -71,8 +72,9 @@ class EmbeddedBackend:
         root = Path(__file__).resolve().parent.parent
         policy = Policy.load(os.environ.get("POLICY_PATH", root / "policy.yaml"))
         catalog = Catalog.load(os.environ.get("CATALOG_PATH", root / "data" / "catalog.json"))
-        paypal = MockPayPal(require_payer_approval=os.environ.get("PAYPAL_MOCK_APPROVAL") == "1",
-                            checkout_base=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"))
+        # Self-contained: the mock captures at once. There is no checkout page in this process,
+        # so PAYPAL_MOCK_APPROVAL is ignored here (use remote mode for the buyer-approval round trip).
+        paypal = MockPayPal(require_payer_approval=False)
         self.service = BuyerService(policy, catalog, paypal, db_path or os.environ.get("MCP_DB_PATH", ":memory:"))
         self.service.invalidate_lost_mock_orders()  # takes the single-process mock lock for a file DB
         self.tools = GuardedTools(self.service)

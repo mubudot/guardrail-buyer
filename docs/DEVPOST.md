@@ -5,7 +5,7 @@
 
 **Project name:** GuardRail Buyer
 
-**Tagline (≤ 200 chars):** An AI purchasing agent that pays with PayPal, but only inside the spend guardrails you set: per-order and daily caps, human approval over limits, hard denies the model can't talk past.
+**Tagline (≤ 200 chars):** AI agents that pay with PayPal, but only inside the spend guardrails you set: caps, human approval over limits, hard denies no model can talk past. Built-in agent or any MCP client.
 
 **Suggested categories / prizes:** Best Use of Agentic Commerce · Best Use of PayPal + AI · Best Use of AG Grid
 
@@ -40,7 +40,23 @@ The AG Grid dashboard shows pending approvals (with the agent's justification an
 every order with its PayPal status and a **Pay with PayPal** button, and spend vs. caps (captured,
 reserved, headroom). The **Audit** tab lists every guardrail decision (allow / approval / deny, the rule
 hit, amount, merchant, request id) so a finance lead can filter, search and export them to CSV, and
-click any row to see the quote, each rule evaluated and the payment timeline.
+click any row to see the quote, each rule evaluated and the payment timeline. The **Policy & spend** tab
+lets the owner edit the caps and the merchant/category allowlists right in AG Grid (owner token, every
+change validated again by the server and kept in a change history) and shows spend over time against the
+daily cap (AG Charts).
+
+**Bring your own agent (MCP).** The same guardrailed tools are an MCP server, so Claude Desktop, Codex or
+any MCP client can shop through GuardRail: `search_catalog`, `check_policy`, `create_order`,
+`request_approval`, `get_order_status`, `get_approval_status`, `get_spend_summary`. The MCP side never
+gets PayPal credentials or the approver token, can only name a catalog product and a quantity (an extra
+`price` or `merchant` argument is refused), has no approve/capture tool, and every money-moving call goes
+through the same server-side policy gate. In a live run, a real model (via Codex) was told to follow a
+prompt injection (buy a gift card from a blocked merchant, a $640 chair over the hard max, pass
+`price=0.01`, approve itself): every attempt was refused by the server, while the legitimate order went
+through.
+
+*The demo video shows the dashboard flow with the built-in agent; the MCP server and the Policy & spend
+tab were added after recording (README: "Use it from any MCP agent", repro step 10).*
 
 ## How we built it
 
@@ -60,16 +76,28 @@ click any row to see the quote, each rule evaluated and the payment timeline.
 - **AI:** Claude (`claude-sonnet-5-5`) through the Anthropic Messages API with four tools:
   `search_catalog`, `check_policy`, `create_order`, `request_approval`. The model never sees PayPal
   credentials.
-- **Dashboard:** plain HTML/JS with **AG Grid Community** 32.3.3, vendored (approvals grid with action
+- **MCP server:** `python -m app.mcp_server`, stdio JSON-RPC 2.0 (MCP revisions 2025-06-18 / 2025-03-26 /
+  2024-11-05), no SDK dependency, checked against the official MCP Python SDK. Remote mode forwards each
+  call to the GuardRail server (`POST /tools/{name}`), where a strict schema gateway (`GuardedTools`,
+  `additionalProperties: false`, no coercion) hands it to `BuyerService`; embedded mode is a keyless
+  offline sandbox. The process scrubs PayPal credentials and the approver token from its environment, and
+  one session id per MCP session makes split orders count as one purchase. We evaluated PayPal's Agent
+  Toolkit / MCP server and chose to wrap Orders v2 ourselves: those tools give the agent PayPal authority
+  and model-chosen amounts, which our gate exists to prevent (details in the README).
+- **Dashboard:** plain HTML/JS with **AG Grid Community** 32.3.3 and **AG Charts Community** 10.3.3, vendored (approvals grid with action
   buttons, orders grid with PayPal links, spend-vs-caps grid, and an **Audit** grid of every guardrail
   decision: column filters, quick search, risk highlighting, CSV export, and a detail panel with the
-  quote, every rule evaluated and the payment's status timeline).
+  quote, every rule evaluated and the payment's status timeline; a **Policy & spend** tab with editable
+  policy grids (`agTextCellEditor` / `agSelectCellEditor`, dirty-cell highlighting, owner-token save to
+  `PUT /policy` with server-side validation, change history) and a spend-over-time chart).
 - **Offline mode:** `AGENT_MODE=offline` replaces Claude with a small hand-written rule parser (clearly
   labelled, not AI) so anyone can run the full flow without an AI key.
-- **Tests:** 269 pytest tests (268 run everywhere; 1 headless-browser UI test needs jsdom): guardrails,
-  payment flow, reservations/expiry, ambiguous PayPal outcomes and reconciliation, API, agent loop with a
-  scripted fake LLM, offline mode, thread/barrier concurrency tests for budget races, double approvals and
-  cancel-vs-capture, plus a live Sandbox smoke script.
+- **Tests:** 345 pytest tests (343 run everywhere; 1 headless-browser UI test needs jsdom, 1 interop test
+  needs the official MCP SDK): guardrails, payment flow, reservations/expiry, ambiguous PayPal outcomes and
+  reconciliation, API, agent loop with a scripted fake LLM, offline mode, thread/barrier concurrency tests
+  for budget races, double approvals and cancel-vs-capture, MCP protocol + end-to-end stdio sessions
+  (embedded and against a running server, prompt-injection attempts included), policy-edit validation, plus
+  a live Sandbox smoke script.
 
 ## Challenges we ran into
 
@@ -102,6 +130,9 @@ click any row to see the quote, each rule evaluated and the payment timeline.
   requests in parallel or by splitting one item into several orders within a request.
 - The demo video shows a second real run end to end (order `ORD-F79F379F1E` → PayPal capture
   `14579671MH105231J`, `COMPLETED`): the Sandbox buyer logs in and pays on PayPal on screen.
+- Any MCP agent can now be given a budget instead of a wallet: a live Codex session that deliberately tried
+  every injected instruction got `DENIED` / `INVALID_ARGUMENTS` from the server for each one
+  (`docs/MCP_LIVE_SMOKE.md`).
 - Judges can run everything locally in a few minutes, with or without an AI key and with or without a
   PayPal Sandbox app (a local mock covers the PayPal side).
 
@@ -110,7 +141,9 @@ fails closed when unset, a signed cancel callback and a simple per-IP agent rate
 per-requester identity or ownership, so don't expose it publicly); catalog merchants are labels and all
 payments go to the single Sandbox merchant of the configured app; spend counts on the day it was reserved;
 policy changes don't revoke orders already created; split-order aggregation covers only the same item
-from the same merchant within one request; mock PayPal state is in memory (one mock server per database, enforced by a lock file). Details in the README.
+from the same merchant within one request; mock PayPal state is in memory (one mock server per database, enforced by a lock file); the MCP/`/tools`
+surface has the same local-demo scope (no per-client auth, split-order aggregation per MCP session); policy
+edits use one owner token. Details in the README.
 
 ## What we learned
 
@@ -124,13 +157,14 @@ from the same merchant within one request; mock PayPal state is in memory (one m
 - PayPal webhooks (`CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`) instead of relying on the
   return redirect and on-demand reconciliation.
 - Requester authentication, ownership and rate limits; mapping catalog merchants to real payees.
-- Vaulted payment methods / PayPal Agent Toolkit for trusted, pre-approved recurring purchases within caps.
+- Vaulted payment methods for trusted, pre-approved recurring purchases within caps; PayPal Agent Toolkit
+  for read-only / merchant-side tasks behind the same gateway.
 - Per-requester budgets, multiple approvers, and Slack/email approval links.
 - Real merchant catalogs instead of the demo catalog.
 
 ## Built with
 
-python · fastapi · sqlite · paypal-orders-api (v2, Sandbox) · anthropic-claude (Messages API, tool use) · ag-grid · javascript · html/css · pytest · httpx · playwright (demo recording) · ffmpeg
+python · fastapi · sqlite · paypal-orders-api (v2, Sandbox) · anthropic-claude (Messages API, tool use) · model-context-protocol (MCP) · ag-grid · ag-charts · javascript · html/css · pytest · httpx · playwright (demo recording) · ffmpeg
 
 ## AI tools used (disclosure)
 
@@ -141,7 +175,8 @@ python · fastapi · sqlite · paypal-orders-api (v2, Sandbox) · anthropic-clau
   verified by running the test suite, live Sandbox calls and live agent runs.
 - **OpenAI Codex (CLI)** was used as an independent code reviewer (correctness, security, test gaps,
   docs drift); its review rounds and how each finding was fixed are in `docs/CODEX_REVIEW_*.md` and
-  `docs/REVIEW_LOG.md`.
+  `docs/REVIEW_LOG.md`. It was also used as an MCP client (a real tool-calling model) for the live
+  prompt-injection run against the MCP server (`docs/MCP_LIVE_SMOKE.md`).
 - **Piper TTS** (offline, open source; voice trained on LibriTTS-R, CC BY 4.0) generated the demo
   video narration. No music is used.
 - The optional `AGENT_MODE=offline` parser is hand-written rules, not an AI model.
@@ -158,12 +193,18 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 268 passed, 1 skipped (jsdom UI test), no network
+python -m pytest -q                      # 343 passed, 2 skipped (jsdom UI test, MCP SDK interop), no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card
 # → cables: order + "Pay with PayPal" (local mock checkout) · keyboard: approval request · gift card: refused
+# Policy & spend tab: double-click "Per-order cap", type 100, Save policy (owner token blank = "demo")
 ```
+
+- **From an MCP agent:** with the server running, add the MCP server to Claude Desktop or Codex with
+  `GRB_API_URL=http://127.0.0.1:8000` (copy-paste config in the README, "Use it from any MCP agent").
+  Without any client: the README's 4-line `printf … | python -m app.mcp_server` shows an order placed, a
+  blocked merchant denied and a `price` override refused, fully offline.
 
 - **Switching modes:** the block above exports `AGENT_MODE`, `PAYPAL_MODE` and `GRB_NO_DOTENV=1`, which
   override and disable `.env`. Stop the server and open a **new shell** before the two options below

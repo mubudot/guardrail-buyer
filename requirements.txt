@@ -1,4 +1,4 @@
-# Exact versions tested together (Python 3.12, 2026-10-30): the full suite passes with this set (269 tests at the final re-check: 268 passed + 1 jsdom UI test skipped without jsdom).
+# Exact versions tested together (Python 3.12, 2026-10-30): the full suite passes with this set (345 tests after the MCP + Policy tab upgrade: 343 passed + 2 skipped without jsdom and the optional mcp SDK).
 # Direct dependencies
 fastapi==0.162.0
 uvicorn==0.41.0

@@ -446,3 +446,13 @@ def test_interop_with_official_mcp_sdk():
     names, denied = anyio.run(run)
     assert "create_order" in names and denied.structured_content["result"] == "DENIED"
     assert mcp is not None
+
+
+def test_embedded_mode_ignores_mock_approval_flag(monkeypatch):
+    monkeypatch.setenv("PAYPAL_MOCK_APPROVAL", "1")  # e.g. exported by the README offline block
+    b = EmbeddedBackend()
+    try:
+        r = b.call("create_order", {"product_id": "P-2001", "quantity": 1}, SID)["result"]
+        assert r["result"] == "ORDER_PLACED" and r["order"]["approve_url"] is None
+    finally:
+        b.close()
