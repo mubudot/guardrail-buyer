@@ -185,7 +185,8 @@ python -m app.cli "3 bags of coffee beans and 2 snack boxes"   # CLI: own in-mem
 ```
 
 Then open the printed URL (`$PUBLIC_BASE_URL/`), enter `demo` as approver token, click **Pay with PayPal**
-on the cables order (local mock checkout → **Pay now**) and **Approve** the keyboard.
+on the cables order (local mock checkout → **Pay now**), then **Approve** the keyboard and confirm in the dialog
+(**Approve & create PayPal order**).
 
 **Reset / rerun:** `kill $SERVER_PID` (stop the server) and `rm -f "$DB_PATH"*` (or start a new shell and paste
 the `export` lines again, which picks a new temp DB). The ready check fails, instead of silently talking to
@@ -291,15 +292,15 @@ return / cancel links and the mock checkout).
 5. **See what is waiting for you** — `curl 'localhost:8000/approvals?status=PENDING'` → see the keyboard approval with the agent's justification and the policy reasons.
    Keep its id for the next step:
    `APR_ID=$(curl -s 'localhost:8000/approvals?status=PENDING' | python -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')`
-6. **Approve it** — click **Approve** in *Pending approvals*, or
+6. **Approve it** — click **Approve** in *Pending approvals*, review the confirmation dialog and click **Approve & create PayPal order**, or
    `curl -X POST -H 'X-Approver-Token: demo' "localhost:8000/approvals/$APR_ID/approve"` → a new order
    linked to the approval, awaiting the buyer; `GET /spend` shows `total: 114.98`. Without the token → `401`.
-7. **Or reject it** (instead of step 6) — **Reject** / `curl -X POST -H 'X-Approver-Token: demo' "localhost:8000/approvals/$APR_ID/reject"` → status `REJECTED`, no money moves.
+7. **Or reject it** (instead of step 6) — **Reject**, then **Reject request** in the dialog / `curl -X POST -H 'X-Approver-Token: demo' "localhost:8000/approvals/$APR_ID/reject"` → status `REJECTED`, no money moves.
 8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`; without a key: `AGENT_MODE=offline python -m app.cli "…"`, sample in `docs/sample_offline_run.txt`). The CLI starts from an empty in-memory ledger each run. `CLI_DB_PATH=<file>` makes it use a database file; in mock mode the CLI must then own that file exclusively (same lock as the server) and exits with code 3 while a mock server uses it, so do **not** point the CLI at a running mock server's database. Sharing a database between CLI and server works only in Sandbox mode.
 9. **Audit every decision** — open the **Audit** tab (or `curl localhost:8000/decisions`) → one row per guardrail decision: the gift card is a red `deny` (rule hit `merchant_blocklist`/`category_allowlist`), the keyboard an amber `approval` (`per_order_cap`), an order whose payment is unconfirmed is highlighted orange. Filter any column, search with the box, **Export CSV**, and click a row → quote, every rule evaluated and the payment timeline (`CREATING → PAYER_ACTION_REQUIRED → CAPTURING → COMPLETED`). The Audit tab says how much of the history it shows ("Showing newest 1000 of N"); **Load older** pages back with the API cursor; it polls only while the tab is visible, and the open detail refreshes with each poll (labelled with its snapshot time). CSV cells that start with `= + - @` (or tab / CR) are prefixed with `'` so spreadsheets do not evaluate them. Headless check without a browser: `node scripts/ui_smoke_jsdom.cjs http://127.0.0.1:8000` (needs `npm i jsdom@24`); `GRB_JSDOM_NODE_PATH=<that node_modules> pytest tests/test_ui_jsdom.py` runs the Audit-tab regressions (skipped without jsdom).
 10. **Edit the policy** — open the **Policy & spend** tab → the spend-over-time chart and the policy grids. Double-click
     *Per-order cap*, type `100`, Enter, then *Daily cap*, type `250`, Enter (after steps 4 and 6 today's total is
-    $114.98, so a second $89 keyboard would also pass the old $150 daily cap) → the cells turn yellow, **Save policy**
+    $114.98, so a second $89 keyboard would exceed the old $150 daily cap) → the cells turn yellow, **Save policy**
     (owner token: blank = the approver token `demo`) → saved, listed in *Change history*, and another keyboard is now within policy
     (`curl -X POST localhost:8000/tools/check_policy -H 'content-type: application/json' -d '{"arguments":{"product_id":"P-1003","quantity":1}}'`
     → `ALLOW`). Try a per-order cap above the daily cap → refused by the server, nothing changes. Without the
@@ -472,7 +473,7 @@ Chromium (Playwright) drives the dashboard and records the screen → ffmpeg cut
 time and lays the narration on top → `docs/demo_draft.mp4`. No music. The Sandbox buyer login (scene 7) is
 recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_EMAIL` /
 `SANDBOX_BUYER_PASSWORD` (environment only); without them scene 7 is a labelled placeholder card
-(see `docs/VIDEO_SCRIPT.md`). The submitted 2:18 cut is a `--skip-checkout` take of the current dashboard
+(see `docs/VIDEO_SCRIPT.md`). The prepared 2:18 cut is a `--skip-checkout` take of the current dashboard
 (real Sandbox + Claude) followed by the real buyer-approval clip from an earlier take, labelled on screen.
 
 ## REST API
@@ -547,9 +548,9 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 - [x] AG Grid **Audit** tab: every guardrail decision with column filters, quick search, risk highlighting, CSV export and a detail panel (quote, rules evaluated, payment timeline)
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
 - [x] Bring your own model: Anthropic Messages or any OpenAI-compatible endpoint (`LLM_PROVIDER`)
-- [x] Demo video (2:18): live run of the current dashboard against the real PayPal Sandbox with Claude, plus the real Sandbox buyer approval clip recorded earlier the same day (labelled on screen), placed before the closing card (YouTube link on the Devpost page)
-- [x] MCP server: the guarded tools for any MCP agent (Claude Desktop, Codex …), remote + embedded offline modes, prompt-injection tests, live Codex run ([`docs/MCP_LIVE_SMOKE.md`](docs/MCP_LIVE_SMOKE.md)) — added after the video was recorded
-- [x] AG Grid **Policy & spend** tab: owner-token protected policy editor with server validation and change history, spend-over-time chart (AG Charts Community) — added after the video was recorded
+- [x] Demo video (2:18): live run of the current dashboard against the real PayPal Sandbox with Claude, plus the real Sandbox buyer approval clip recorded earlier the same day (labelled on screen), placed before the closing card (YouTube upload and the Devpost video link are pending)
+- [x] MCP server: the guarded tools for any MCP agent (Claude Desktop, Codex …), remote + embedded offline modes, prompt-injection tests, live Codex run ([`docs/MCP_LIVE_SMOKE.md`](docs/MCP_LIVE_SMOKE.md)) — not shown in the video
+- [x] AG Grid **Policy & spend** tab: owner-token protected policy editor with server validation and change history, spend-over-time chart (AG Charts Community) — present in the current build, not demonstrated in the video
 - [ ] PayPal webhooks (`CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`) with signature verification
 - [ ] PayPal Agent Toolkit for read-only / merchant-side tasks behind the same gateway
 

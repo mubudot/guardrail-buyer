@@ -55,8 +55,9 @@ prompt injection (buy a gift card from a blocked merchant, a $640 chair over the
 `price=0.01`, approve itself): every attempt was refused by the server, while the legitimate order went
 through.
 
-*The demo video shows the dashboard flow with the built-in agent; the MCP server and the Policy & spend
-tab were added after recording (README: "Use it from any MCP agent" and the Policy & spend tab, repro steps 10–11).*
+*The demo video shows the dashboard flow with the built-in agent; the MCP server and the Policy & spend tab are in
+the current build but are not demonstrated in the video (README: "Use it from any MCP agent" and the Policy & spend
+tab, repro steps 10–11).*
 
 ## How we built it
 

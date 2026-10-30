@@ -210,6 +210,7 @@ jsdom; video v2 reviewed by Codex in two passes. Reports kept outside the repo.
 | U7 | Codex UI pass 3 | AG Grid keeps a mounted overlay when its template changes, so the U4 text still did not change on screen. | Re-show the no-rows overlay after changing the template; the jsdom test now asserts the rendered overlay text (ce25429; the test fails with the re-show removed). |
 | V1 | Codex video pass 1 | No P1/P2. P3: brief dashboard reload flash at the end of the inserted clip. | The clip's last COMPLETED frame is held until the closing card. Other P3s left (captions briefly over the spend legend; the capture-before-approval sentence is narrated, shown in `docs/SANDBOX_E2E.md` / `scripts/sandbox_smoke.py`; PayPal's fake Sandbox persona details). |
 | V2 | Codex video pass 2 | No P1/P2; splice clean. | — |
+| D1 | Codex docs check (25914ef) | No P1/P2; counts (418/3, 420/1 with jsdom, 415/6 without node) and video length/order verified. P3s: README step-10 cap arithmetic reversed; Approve/Reject steps did not mention the confirmation dialog; "added after the video was recorded" no longer accurate for v2; "submitted" cut / YouTube link wording while the upload is pending; v2 reproducibility overstated. | All five reworded. |
 
 Counts after these changes: 421 tests — `418 passed, 3 skipped` with Python + node (no jsdom), `420 passed, 1 skipped`
 with jsdom, `415 passed, 6 skipped` without node. Video v2: 2:18 (138.4 s), OCR-checked (1 fps).

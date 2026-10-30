@@ -12,8 +12,9 @@ dashboard (`scripts/video/record_demo.py --skip-checkout`) against the **real Pa
 (`claude-sonnet-5-5`)** as the agent; `scripts/video/assemble.py` builds that part (3 s of model wait cut). Scene 8
 is the real Sandbox buyer approval cut from the earlier take (below), labelled on screen as recorded earlier, narrated
 with the `s5_checkout` / `s5_return` lines, and placed **before the closing card**, after the approval and cancel
-scenes, so the live scenes never contradict the clip's order state. The insertion (cut, label, narration, concat) is a one-off ffmpeg step
-kept outside the repo; everything else is reproducible with `scripts/video/make_demo.sh`. Checks: frame-by-frame contact sheet, OCR
+scenes, so the live scenes never contradict the clip's order state. `make_demo.sh` produces a full-flow draft; recreating the v2 base take means running
+`record_demo.py --skip-checkout` against a Sandbox + Claude server, then `assemble.py`. The final clip insertion (cut,
+label, narration, concat) is a one-off ffmpeg step kept outside the repo. Checks: frame-by-frame contact sheet, OCR
 (tesseract, 1 fps, 138 frames: no personal email, name, client id, key, password or tunnel URL; visible are Sandbox
 order / capture ids, the checkout `token=` which is the Sandbox order id, and PayPal's own fake Sandbox persona
 "John Doe" with test funding sources), and two Codex video passes (both "no material issues"; remaining P3s:
