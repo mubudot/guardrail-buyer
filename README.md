@@ -4,7 +4,7 @@
 
 *Built for the PayPal AI Hackathon (2026). Runs with no network at runtime (mock PayPal, rule-based offline agent, vendored AG Grid), or against the real PayPal Sandbox with Claude. Installing the Python dependencies needs a package index.*
 
-**Demo video (2:18):** VIDEO_URL_PLACEHOLDER (YouTube; link added when the video is published)
+**Demo video (2:18):** https://youtu.be/6pp8X-yFJwk
 
 ![dashboard](docs/dashboard.png)
 
