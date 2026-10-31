@@ -11,8 +11,8 @@ submission were not independently re-verified in this implementation pass.
 | Demo video | Public on YouTube, 2:18 | [Published demo](https://youtu.be/6pp8X-yFJwk) |
 | Devpost | Submitted | Local submission copy: [DEVPOST.md](DEVPOST.md) |
 
-The judge-audit edits are private local commits pending review. They have not been pushed or copied
-to Devpost. The published video and narration remain unchanged. Judges can use the local offline
+Changes made after the Devpost submission (pitch focus, scenario benchmark, payment recheck action)
+are listed in the git history; the published video and narration are unchanged. Judges can use the local offline
 setup without accounts; real Sandbox verification requires their own free Sandbox app and buyer.
 TTS source and license evidence, including its verification limits, is in [VIDEO_SCRIPT.md](VIDEO_SCRIPT.md#tts-source-and-license-evidence).
 

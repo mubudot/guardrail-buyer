@@ -50,7 +50,7 @@ hit, amount, merchant, request id) so a finance lead can filter, search and expo
 click any row to see the quote, each rule evaluated and the payment timeline. The **Policy & spend** tab
 lets the owner edit the caps and the merchant/category allowlists right in AG Grid (owner token, every
 change validated again by the server and kept in a change history) and shows spend over time against the
-daily cap (AG Charts).
+daily approval threshold (AG Charts).
 
 **Bring your own agent (MCP).** The same guardrailed tools are an MCP server, so Claude Desktop, Codex or
 any MCP client can shop through GuardRail: `search_catalog`, `check_policy`, `create_order`,
