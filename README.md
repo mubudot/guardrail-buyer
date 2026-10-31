@@ -1,19 +1,33 @@
 # GuardRail Buyer
 
-> An AI purchasing agent that pays with PayPal — but only inside the spend guardrails you set.
+> For the office manager: let an AI prepare routine purchases while you control the budget.
 
-*Built for the PayPal AI Hackathon (2026). Runs with no network at runtime (mock PayPal, rule-based offline agent, vendored AG Grid), or against the real PayPal Sandbox with Claude. Installing the Python dependencies needs a package index.*
+Ask once: “Buy two USB-C cables and a mechanical keyboard for our new hire, plus a $100 gift card.”
+**$25.98 of cables becomes a PayPal Sandbox order; the $89 keyboard waits for manager approval;
+the $100 gift card is blocked.** Budget is reserved **before PayPal is called**. The buyer still
+approves every payment on PayPal, including orders a manager approved in the dashboard.
+
+The reusable piece is **one server-side spend gate shared by the built-in agent and MCP clients**.
+It binds approvals to exact quotes and keeps budget reserved when a payment outcome is unknown.
+**Scope: a fixed catalog and one Sandbox payee.**
+
+**Evidence:** [real Sandbox approval → capture](docs/SANDBOX_E2E.md) ·
+[live MCP adversarial run](docs/MCP_LIVE_SMOKE.md) ·
+[internal scenario benchmark](docs/SCENARIO_BENCHMARK.md) (offline rules and mock payments; not a user study).
 
 **Demo video (2:18):** https://youtu.be/6pp8X-yFJwk
 
-![dashboard](docs/dashboard.png)
+**Try it locally:** paste the [offline block](#no-keys-no-network-copy-paste-offline-block)
+(no AI key or PayPal account). It starts the dashboard and sends the mixed request above. Open the
+printed URL, enter approver token `demo`, click **Pay with PayPal** → **Pay now**, then **Approve**
+the keyboard. Dependency installation time varies by machine and package index.
+The full test run is optional after the app is running.
+With your own keys, the same flow uses Claude and the [real PayPal Sandbox](#against-the-real-paypal-sandbox).
 
-**For judges, in 3 minutes:** clone, then paste the [offline block](#no-keys-no-network-copy-paste-offline-block)
-(no AI key, no PayPal account): it runs the test suite, starts the dashboard and sends one mixed request →
-an order to pay, an approval to grant, a refusal. Open the printed URL, enter approver token `demo`, click
-**Pay with PayPal** → **Pay now** and **Approve**. With your own keys the same flow runs on Claude and the
-real PayPal Sandbox ([below](#against-the-real-paypal-sandbox)); a real Sandbox buyer approval → capture is
-documented with ids and screenshots in [`docs/SANDBOX_E2E.md`](docs/SANDBOX_E2E.md).
+*Built for the PayPal AI Hackathon (2026). Offline mode uses a hand-written rule parser (no AI), mock
+PayPal and vendored AG Grid; runtime needs no network. Installing dependencies needs a package index.*
+
+![dashboard](docs/dashboard.png)
 
 **Bring your own agent:** the same guardrailed tools are an MCP server, so Claude Desktop, Codex or any
 MCP client can shop only inside the policy ([Use it from any MCP agent](#use-it-from-any-mcp-agent-claude-desktop--codex)).
@@ -24,7 +38,7 @@ policy engine between the LLM and the wallet:
 | Rule | Effect |
 |---|---|
 | Per-order cap (default $50) | above it → **NEEDS_APPROVAL** (a human must approve) |
-| Daily cap (default $150, per policy timezone) | today's spend + this order above it → **NEEDS_APPROVAL** |
+| Daily approval threshold (default $150, per policy timezone) | captured + reserved by reservation day, plus this order above it → **NEEDS_APPROVAL**; human approval can waive it |
 | Hard maximum per order (default $500) | above it → **DENY** |
 | Merchant allowlist / blocklist | not allowed → **DENY** |
 | Category allowlist | not allowed → **DENY** |
@@ -144,7 +158,7 @@ Requires Python 3.11+ (tested with 3.12) and git. `requirements.txt` pins the ex
 
 ### No keys, no network: copy-paste offline block
 
-Runs the tests, the server and the CLI with the rule-based offline agent and the mock PayPal. Only the
+Runs the server and the CLI with the rule-based offline agent and the mock PayPal. Only the
 `pip install` line needs network (a package index). Paste into a **fresh** bash shell at the repository root
 (the exports below override `.env` for the rest of that shell; see *Switching modes*):
 
@@ -162,8 +176,6 @@ export DB_PATH="$(mktemp -d)/guardrail-demo.db"         # throwaway database for
 export PORT=8000                   # any free port; if it is busy, pick another one ...
 export PUBLIC_BASE_URL="http://127.0.0.1:$PORT"         # ... and keep this in sync (mock checkout + PayPal links)
 export GRB_INSTANCE="demo-$$-$RANDOM"                   # lets the ready check recognise THIS server
-
-python -m pytest -q                                     # -> 418 passed, 3 skipped (two jsdom UI tests, optional MCP SDK interop; without node: 415 passed, 6 skipped)
 
 uvicorn app.main:app --host 127.0.0.1 --port "$PORT" > "${DB_PATH%/*}/server.log" 2>&1 &
 SERVER_PID=$!
@@ -189,6 +201,10 @@ python -m app.cli "3 bags of coffee beans and 2 snack boxes"   # CLI: own in-mem
 Then open the printed URL (`$PUBLIC_BASE_URL/`), enter `demo` as approver token, click **Pay with PayPal**
 on the cables order (local mock checkout → **Pay now**), then **Approve** the keyboard and confirm in the dialog
 (**Approve & create PayPal order**).
+
+**Optional verification, after the app is running:** in another terminal with the same virtualenv,
+run `python -m pytest -q` for the full suite, or `python scripts/scenario_benchmark.py` for the
+internal scenario report. Neither requires an AI key or real PayPal payments.
 
 **Reset / rerun:** `kill $SERVER_PID` (stop the server) and `rm -f "$DB_PATH"*` (or start a new shell and paste
 the `export` lines again, which picks a new temp DB). The ready check fails, instead of silently talking to
@@ -550,7 +566,7 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 - [x] AG Grid **Audit** tab: every guardrail decision with column filters, quick search, risk highlighting, CSV export and a detail panel (quote, rules evaluated, payment timeline)
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
 - [x] Bring your own model: Anthropic Messages or any OpenAI-compatible endpoint (`LLM_PROVIDER`)
-- [x] Demo video (2:18): live run of the current dashboard against the real PayPal Sandbox with Claude, plus the real Sandbox buyer approval clip recorded earlier the same day (labelled on screen), placed before the closing card (YouTube upload and the Devpost video link are pending)
+- [x] Demo video (2:18): live run of the current dashboard against the real PayPal Sandbox with Claude, plus the real Sandbox buyer approval clip recorded earlier the same day (labelled on screen), placed before the closing card ([public on YouTube](https://youtu.be/6pp8X-yFJwk); Devpost submitted, per entrant status)
 - [x] MCP server: the guarded tools for any MCP agent (Claude Desktop, Codex …), remote + embedded offline modes, prompt-injection tests, live Codex run ([`docs/MCP_LIVE_SMOKE.md`](docs/MCP_LIVE_SMOKE.md)) — not shown in the video
 - [x] AG Grid **Policy & spend** tab: owner-token protected policy editor with server validation and change history, spend-over-time chart (AG Charts Community) — present in the current build, not demonstrated in the video
 - [ ] PayPal webhooks (`CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`) with signature verification

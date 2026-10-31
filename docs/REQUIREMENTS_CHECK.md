@@ -1,5 +1,27 @@
 # PayPal AI Hackathon — requirements check
 
+## Current submission status (2026-10-31)
+
+The following status is supplied by the entrant for this audit; anonymous access and the live
+submission were not independently re-verified in this implementation pass.
+
+| Surface | Current status | Reference |
+|---|---|---|
+| Repository | Public, with the MIT `LICENSE` in source | [mubudot/guardrail-buyer](https://github.com/mubudot/guardrail-buyer) |
+| Demo video | Public on YouTube, 2:18 | [Published demo](https://youtu.be/6pp8X-yFJwk) |
+| Devpost | Submitted | Local submission copy: [DEVPOST.md](DEVPOST.md) |
+
+The judge-audit edits are private local commits pending review. They have not been pushed or copied
+to Devpost. The published video and narration remain unchanged. Judges can use the local offline
+setup without accounts; real Sandbox verification requires their own free Sandbox app and buyer.
+TTS source and license evidence, including its verification limits, is in [VIDEO_SCRIPT.md](VIDEO_SCRIPT.md#tts-source-and-license-evidence).
+
+## Historical checks (2026-10-30; retained as recorded)
+
+Everything below is the pre-publication checklist and its historical evidence. In particular,
+“local only”, upload-pending statements and G1/G4/G5 actions below describe that earlier check,
+not the current submission status above. Historical test counts are not results of this audit pass.
+
 Source: Official Rules <https://paypalaihackathon.devpost.com/rules> and the Overview page
 <https://paypalaihackathon.devpost.com/>, re-read 2026-10-30 (cross-check round 5, ~07:00 Asia/Taipei; again at 08:55 in the final re-check: no change to
 dates, requirements, judging criteria or prizes).
@@ -8,7 +30,7 @@ access must stay free until judging ends.
 
 Legend: ✅ done · 🟡 partly / needs a decision · ❌ not done yet
 
-## Project requirements (Rules §4 "Project Requirements")
+### Historical project requirements (Rules §4 "Project Requirements")
 
 | # | Requirement (rules wording, shortened) | Status | Evidence / gap |
 |---|---|---|---|
@@ -21,7 +43,7 @@ Legend: ✅ done · 🟡 partly / needs a decision · ❌ not done yet
 | 7 | Third-party SDK/APIs used within their terms | ✅ | PayPal Sandbox, Anthropic API, AG Grid Community 32.3.3 (MIT, vendored with its LICENSE), Piper TTS voice (CC BY 4.0, credited) |
 | 8 | Sponsor-prize requirements (§8): AG Grid prize = "use any AG Grid tools" | ✅ | Dashboard uses AG Grid Community 32.3.3 (vendored, no CDN): approvals grid with action buttons, orders grid with Pay links, spend-vs-caps grid, and an **Audit** grid (floating filters, quick search, `cellClassRules`/`rowClassRules` risk colouring, CSV export with formula neutralisation, `getRowId` delta updates, row-click detail panel, keyset paging). Community features only |
 
-## Submission requirements
+### Historical submission requirements
 
 | # | Requirement | Status | Evidence / gap |
 |---|---|---|---|
@@ -38,7 +60,7 @@ Legend: ✅ done · 🟡 partly / needs a decision · ❌ not done yet
 | 18 | Original work, solely owned; open-source deps used under their licences | ✅ | Own code; vendored AG Grid MIT licence kept |
 | 19 | Privacy: no personal data in submission | ✅ | Round-5 scan of tracked files, git history and OCR of every screenshot: no personal email, real name, address, keys, tokens, account ids or tunnel URLs. Only the PayPal-generated Sandbox test buyer `sb-…@personal.example.com` and Sandbox order/capture ids appear (see `docs/REVIEW_LOG.md`) |
 
-## Judging (Stage One pass/fail: fits the theme, applies the PayPal APIs → ✅). Stage Two, equal weight
+### Historical judging checks (Stage One pass/fail: fits the theme, applies the PayPal APIs → ✅). Stage Two, equal weight
 
 | Criterion (rules wording) | Strength | To strengthen |
 |---|---|---|
@@ -52,7 +74,7 @@ Prize fit: Grand prizes; honorable mentions **Best Use of Agentic Commerce**, **
 (a project can win one grand *or* one honorable mention, plus one sponsor prize); sponsor prize
 **Best Use of AG Grid** (only condition: uses any AG Grid tools).
 
-## Gaps / next actions
+### Historical gaps / next actions
 
 - **G1 Demo video** — done except the upload: the v2 cut (2:18) shows the polished dashboard live on the Sandbox with Claude and ends with the real buyer-approval clip (Sandbox personal account login → Pay → `COMPLETED`, recorded earlier the same day, labelled). The user uploads it to YouTube (public) and pastes the link.
 - **G3 Sandbox credentials for judges** — decision needed: keep "create your own Sandbox app" (current, safe; mock mode works without it) or publish a throwaway Sandbox app's credentials in the Devpost testing instructions only. Never commit secrets.

@@ -5,6 +5,31 @@ credited on the closing card). Only on-screen brands: PayPal's own Sandbox check
 (sponsor), Claude (named as the model used). Narration text lives in `scripts/video/scenes.json`; keep it in sync
 with this file.
 
+## TTS source and license evidence
+
+These are attribution notes only; the published narration and scene text below are unchanged.
+
+- **Engine:** [Piper source, original project](https://github.com/rhasspy/piper),
+  [MIT license](https://github.com/rhasspy/piper/blob/master/LICENSE.md).
+  The maintained successor is [OHF-Voice/piper1-gpl](https://github.com/OHF-Voice/piper1-gpl), with a
+  [GPL v3 license](https://github.com/OHF-Voice/piper1-gpl/blob/main/COPYING).
+  `scripts/video/tts.py` invokes `python -m piper`; the documented installation is unpinned
+  `pip install piper-tts`. No installed version or binary hash for the published take is recorded in
+  this repository, so these links identify the source lineages and their licenses, not a verified
+  engine release used for that take.
+- **Exact voice named in the recording notes:** `en_US-libritts_r-medium.onnx`, from
+  [the voice model directory](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/libritts_r/medium),
+  with [model weights](https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx)
+  and [configuration](https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx.json).
+  The script defaults to speaker `0`, length scale `1.08`, and sentence silence `0.25` seconds;
+  `scenes.json` names this voice too. The downloaded model's hash was not recorded.
+- **Voice license evidence:** the [voice-specific model card](https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/libritts_r/medium/MODEL_CARD)
+  names the [LibriTTS-R dataset](https://www.openslr.org/141/) and labels its dataset license
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The hosting repository's
+  [metadata](https://huggingface.co/rhasspy/piper-voices/blob/main/README.md) declares MIT.
+  The voice card does not separately state a weights/output license; the dataset license alone
+  does not establish every model asset's reuse terms. No broader rights clearance is claimed here.
+
 ## v2 cut (2026-10-30, current)
 
 2:18 (138.4 s), 1280×720, H.264 + AAC, kept outside the repo. Order: scenes 1–7 are one live take of the polished

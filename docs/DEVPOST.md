@@ -13,19 +13,26 @@
 
 ## Inspiration
 
-AI agents are getting good at doing errands, and buying things is the obvious next errand. But today
-the choice is all or nothing: either the agent can't pay, or it holds credentials that let it spend
-anything. Small teams, office managers and ops people want the convenience of "just order what the
-new hire needs" without waking up to a surprise bill or a gift-card scam the model fell for. We wanted
-the same kind of controls a company card has (limits, approvals, blocked merchants) for an AI agent
-that pays with PayPal.
+GuardRail Buyer is for the office manager who wants an AI to prepare routine purchases without giving
+the model payment credentials. In one new-hire request, **$25.98 of cables becomes a PayPal Sandbox
+order, an $89 keyboard waits for manager approval, and a $100 gift card is blocked**. Budget is
+reserved before PayPal is called; the buyer still approves every payment on PayPal.
+
+The reusable component is **one server-side spend gate shared by the built-in agent and MCP clients**.
+It binds approvals to exact quotes and keeps budget reserved when a payment outcome is unknown.
+This build uses a **fixed catalog and one Sandbox payee**.
+
+Evidence: [real Sandbox approval → capture](https://github.com/mubudot/guardrail-buyer/blob/main/docs/SANDBOX_E2E.md) · [live MCP adversarial run](https://github.com/mubudot/guardrail-buyer/blob/main/docs/MCP_LIVE_SMOKE.md).
+The [internal scenario benchmark](https://github.com/mubudot/guardrail-buyer/blob/main/docs/SCENARIO_BENCHMARK.md) exercises offline rules and mock payments; it is not a user study.
 
 ## What it does
 
 You describe what you need in plain language ("2 USB-C cables and a mechanical keyboard for our new
 hire, and a $100 gift card as a welcome present"). The agent (Claude, using tool calls) finds the items
-in a catalog, dry-runs the spend policy and places orders, and every order passes a **deterministic
-policy engine on the server** before it reaches PayPal:
+in the fixed catalog, dry-runs the spend policy and prepares orders through the shared server gate.
+Two cables cost $12.99 each; the default policy has a $50 per-order approval threshold, a $150 daily
+approval threshold (captured + reserved, by reservation day), and a $500 hard maximum per order.
+Human approval can waive the two soft thresholds, while deny rules still apply:
 
 - **ALLOW** (under the per-order cap and today's budget) → the amount is **reserved** against the daily
   budget in the same database transaction as the check, then a real **PayPal Orders v2** order is created
@@ -198,13 +205,15 @@ pip install -r requirements.txt
 # Full flow without any key (mock PayPal + offline rule-based agent); see the README's offline block
 export AGENT_MODE=offline PAYPAL_MODE=mock PAYPAL_MOCK_APPROVAL=1 APPROVER_TOKEN=demo GRB_NO_DOTENV=1
 export DB_PATH="$(mktemp -d)/guardrail-demo.db"
-python -m pytest -q                      # 418 passed, 3 skipped (2 jsdom UI tests, MCP SDK interop), no network
 uvicorn app.main:app --port 8000
 # open http://localhost:8000 , enter approver token "demo", then ask:
 #   Buy 2 USB-C charging cables and a mechanical keyboard for our new hire, and also a $100 gift card
 # → cables: order + "Pay with PayPal" (local mock checkout) · keyboard: approval request · gift card: refused
 # Policy & spend tab: double-click "Per-order cap", type 100, Save policy (owner token blank = "demo")
 ```
+
+- **Optional verification after startup:** in another terminal with the same virtualenv, run
+  `python -m pytest -q` (full suite) or `python scripts/scenario_benchmark.py` (internal offline scenarios).
 
 - **From an MCP agent:** with the server running, add the MCP server to Claude Desktop or Codex with
   `GRB_API_URL=http://127.0.0.1:8000` (copy-paste config in the README, "Use it from any MCP agent").
