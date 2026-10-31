@@ -188,7 +188,8 @@ python · fastapi · sqlite · paypal-orders-api (v2, Sandbox) · anthropic-clau
 - **OpenAI Codex (CLI)** was used as an independent code reviewer (correctness, security, test gaps,
   docs drift); its review rounds and how each finding was fixed are in `docs/CODEX_REVIEW_*.md` and
   `docs/REVIEW_LOG.md`. It was also used as an MCP client (a real tool-calling model) for the live
-  prompt-injection run against the MCP server (`docs/MCP_LIVE_SMOKE.md`).
+  prompt-injection run against the MCP server (`docs/MCP_LIVE_SMOKE.md`). After submission it also
+  implemented part of a judge-style audit; **Claude (via API)** independently reviewed those changes.
 - **Piper TTS** (offline, open source; voice trained on LibriTTS-R, CC BY 4.0) generated the demo
   video narration. No music is used.
 - The optional `AGENT_MODE=offline` parser is hand-written rules, not an AI model.

@@ -655,7 +655,8 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
 - The optional `AGENT_MODE=offline` parser is plain hand-written rules, not a model.
 - **Piper TTS** (offline, open source; voice trained on LibriTTS-R, CC BY 4.0) generated the demo-video narration.
 - **Hark** (an AI agent, built on Claude) was used as a coding assistant to scaffold the backend, guardrail engine, tests and this README. All code was reviewed and tested by running the test suite and live agent calls.
-- **OpenAI Codex (CLI)** was used as an independent code reviewer; findings and fixes are logged in `docs/CODEX_REVIEW_*.md` and [`docs/REVIEW_LOG.md`](docs/REVIEW_LOG.md).
+- **OpenAI Codex (CLI)** was used as an independent code reviewer; findings and fixes are logged in `docs/CODEX_REVIEW_*.md` and [`docs/REVIEW_LOG.md`](docs/REVIEW_LOG.md). After the Devpost submission it also implemented part of a judge-style audit (pitch focus, scenario benchmark, payment recheck action).
+- **Claude (Anthropic, via API)** independently reviewed those post-submission changes (findings only).
 
 ## Other projects by the author
 
