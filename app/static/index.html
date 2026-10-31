@@ -80,7 +80,7 @@
   </section>
 
   <section class="card">
-    <div class="row"><h2>Orders</h2><span class="hint">PayPal Orders v2 status · nothing is captured until the buyer pays on PayPal</span></div>
+    <div class="row"><h2 id="orders-title" tabindex="-1">Orders</h2><span class="hint">PayPal Orders v2 status · nothing is captured until the buyer pays on PayPal</span></div>
     <div id="orders" class="ag-theme-quartz grid auto hug"></div>
     <p id="orders-cue" class="scroll-cue" hidden>Swipe the table sideways for more columns · the payment column stays pinned on the right</p>
   </section>
@@ -116,7 +116,7 @@
 
   <div id="view-policy" class="view" role="tabpanel" aria-labelledby="tab-policy" hidden>
   <section class="card">
-    <div class="row"><h2>Spend over time</h2><span class="hint" id="chart-note">Captured vs reserved per day (policy timezone) against the daily cap</span></div>
+    <div class="row"><h2>Spend over time</h2><span class="hint" id="chart-note">Captured + reserved per day (policy timezone) vs the daily approval threshold</span></div>
     <div class="toolbar"><label class="hint">Days
       <select id="chart-days"><option>7</option><option selected>14</option><option>30</option><option>90</option></select></label></div>
     <div id="spend-chart" class="chart"></div>

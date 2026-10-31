@@ -80,7 +80,7 @@ const pct = (part, whole) => (whole > 0 ? Math.max(0, Math.min(100, (part / whol
 // The cards are built once and then updated in place on every poll, so keyboard focus on a card
 // survives the 5-second refresh.
 const KPI_DEFS = [
-  {key: "spend", label: "Spend today vs daily cap", wide: true},
+  {key: "spend", label: "Spend today vs daily approval threshold", wide: true},
   {key: "pending", label: "Pending approvals", action: {hint: "Show the approvals",
     run: () => { $("tab-ops").click(); $("approvals-card").scrollIntoView({behavior: "smooth", block: "start"}); }}},
   {key: "blocked", label: "Blocked attempts today", action: {hint: "Open the audit log", run: () => $("tab-audit").click()}},
@@ -107,7 +107,7 @@ function setKpi(key, {value, sub, tone = "", extra = null}) {
 }
 function spendBar(captured, reserved, cap) {
   const bar = el("div", {class: "bar", role: "img",
-    "aria-label": `${usd(captured)} captured and ${usd(reserved)} reserved of a ${usd(cap)} daily cap`});
+    "aria-label": `${usd(captured)} captured and ${usd(reserved)} reserved by reservation day against a ${usd(cap)} daily approval threshold; human approval can exceed it`});
   bar.append(el("i", {class: "captured", style: `width:${pct(captured, cap)}%`}),
              el("i", {class: "reserved", style: `width:${Math.min(pct(reserved, cap), 100 - pct(captured, cap))}%`}));
   return bar;
@@ -125,8 +125,8 @@ function renderKpis(spend, pending) {
       el("span", {class: "li"}, el("i", {class: "dot captured"}), ` captured ${usd(c)}`),
       // reserved = orders awaiting the buyer on PayPal, or payments the server could not confirm yet
       el("span", {class: "li"}, el("i", {class: "dot reserved"}), ` reserved ${usd(r)} (awaiting payer or confirmation)`),
-      unconfirmed ? el("b", {class: "unconfirmed"}, `${unconfirmed} payment${unconfirmed > 1 ? "s" : ""} unconfirmed: check the audit log`) : null,
-      el("b", {class: "headroom"}, `${usd(spend.remaining)} headroom left today`))});
+      unconfirmed ? el("b", {class: "unconfirmed"}, `${unconfirmed} payment${unconfirmed > 1 ? "s" : ""} unconfirmed: recheck payment status in Orders`) : null,
+      el("b", {class: "headroom"}, `${usd(spend.remaining)} left before approval is needed`))});
   setKpi("pending", {value: String(pending), tone: pending ? "warn attention" : "",
     sub: pending ? "Over a cap: waiting for a human" : "Nothing waiting for you"});
   const blocked = spend.blocked_today ?? 0, auto = spend.allowed_today ?? 0;

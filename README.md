@@ -112,7 +112,8 @@ Everything is the free **Community** edition (MIT); no Enterprise module or lice
    the order becomes `NEEDS_RECONCILIATION` and keeps its reservation. After a capture call that failed
    ambiguously (5xx, timeout, or `ORDER_ALREADY_CAPTURED` that could not be read back) the app asks PayPal
    for the order status once right away; an unknown create outcome or a capture reported `PENDING` waits
-   for `POST /orders/{id}/reconcile`. Only a confirmed `COMPLETED` capture is recorded as `COMPLETED`. A
+   for **Recheck status** in Orders (`POST /orders/{id}/reconcile`, approver token required).
+   Only a confirmed `COMPLETED` capture is recorded as `COMPLETED`. A
    reconcile that replays an unknown create and is refused for a reason that says nothing about the first
    attempt (401/403/404/409/429 …, or a failed OAuth token request) keeps the order reserved; only a
    `400`/`422` from the Orders API releases it.
@@ -292,11 +293,13 @@ return / cancel links and the mock checkout).
 
 ### Repro steps ("do X → see Y")
 
-1. **Run the tests** — `python -m pytest -q` → see `418 passed, 3 skipped` (421 tests; no network, no API key needed; the skips are two headless UI tests that need jsdom and one interop test that needs the official `mcp` SDK; without `node` three more node-only tests are skipped: `415 passed, 6 skipped`).
-2. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
+1. **Start the app** — `APPROVER_TOKEN=demo PAYPAL_MOCK_APPROVAL=1 uvicorn app.main:app --port 8000` (add `AGENT_MODE=offline`, or use the exports from the offline block, if you have no Anthropic key) →
    open <http://localhost:8000/> for the dashboard (or `/docs` for Swagger). Enter `demo` in the
    *Approver token* box. `PAYPAL_MOCK_APPROVAL=1` makes the offline mock behave like the real
    Sandbox: every order waits for a buyer approval on a local mock checkout page.
+2. **Optional tests after startup** — in another terminal with the same virtualenv, run
+   `python -m pytest -q` (no network or API key needed). Two headless UI tests need node + jsdom;
+   one interop test needs the official MCP SDK. Missing optional dependencies are reported as skips.
 3. **Check the policy** — `curl localhost:8000/policy` → see the caps, allowlists and `"spent_today": "0.00"`.
 4. **Ask the agent to buy something mixed** —
    ```bash
@@ -317,7 +320,7 @@ return / cancel links and the mock checkout).
 8. **One-shot from the CLI** — `python -m app.cli "3 bags of coffee beans and 2 snack boxes"` → see each tool call and its verdict (see `docs/sample_cli_run.txt`; without a key: `AGENT_MODE=offline python -m app.cli "…"`, sample in `docs/sample_offline_run.txt`). The CLI starts from an empty in-memory ledger each run. `CLI_DB_PATH=<file>` makes it use a database file; in mock mode the CLI must then own that file exclusively (same lock as the server) and exits with code 3 while a mock server uses it, so do **not** point the CLI at a running mock server's database. Sharing a database between CLI and server works only in Sandbox mode.
 9. **Audit every decision** — open the **Audit** tab (or `curl localhost:8000/decisions`) → one row per guardrail decision: the gift card is a red `deny` (rule hit `merchant_blocklist`/`category_allowlist`), the keyboard an amber `approval` (`per_order_cap`), an order whose payment is unconfirmed is highlighted orange. Filter any column, search with the box, **Export CSV**, and click a row → quote, every rule evaluated and the payment timeline (`CREATING → PAYER_ACTION_REQUIRED → CAPTURING → COMPLETED`). The Audit tab says how much of the history it shows ("Showing newest 1000 of N"); **Load older** pages back with the API cursor; it polls only while the tab is visible, and the open detail refreshes with each poll (labelled with its snapshot time). CSV cells that start with `= + - @` (or tab / CR) are prefixed with `'` so spreadsheets do not evaluate them. Headless check without a browser: `node scripts/ui_smoke_jsdom.cjs http://127.0.0.1:8000` (needs `npm i jsdom@24`); `GRB_JSDOM_NODE_PATH=<that node_modules> pytest tests/test_ui_jsdom.py` runs the Audit-tab regressions (skipped without jsdom).
 10. **Edit the policy** — open the **Policy & spend** tab → the spend-over-time chart and the policy grids. Double-click
-    *Per-order cap*, type `100`, Enter, then *Daily cap*, type `250`, Enter (after steps 4 and 6 today's total is
+    *Per-order cap*, type `100`, Enter, then *Daily approval threshold*, type `250`, Enter (after steps 4 and 6 today's total is
     $114.98, so a second $89 keyboard would exceed the old $150 daily cap) → the cells turn yellow, **Save policy**
     (owner token: blank = the approver token `demo`) → saved, listed in *Change history*, and another keyboard is now within policy
     (`curl -X POST localhost:8000/tools/check_policy -H 'content-type: application/json' -d '{"arguments":{"product_id":"P-1003","quantity":1}}'`
@@ -502,7 +505,7 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 | GET | `/orders` | all orders (`?status=COMPLETED`) with the policy decision attached |
 | GET | `/orders/{id}` | one order; `?refresh=true` (default) adds `paypal_live_status` from PayPal |
 | POST | `/orders/{id}/capture` | capture after buyer approval (fallback for a lost redirect); not approved yet → `409 NOT_APPROVED_YET` |
-| POST | `/orders/{id}/reconcile` | resolve a `NEEDS_RECONCILIATION` order from PayPal's order status (never charges twice) |
+| POST | `/orders/{id}/reconcile` | resolve a `NEEDS_RECONCILIATION` order from PayPal's order status (approver token required; never charges twice); dashboard: **Recheck status** |
 | POST | `/orders/{id}/cancel` | cancel an order still awaiting the buyer, release its reservation (approver token); otherwise `409`; `503` when no `APPROVER_TOKEN` is configured (unless `DEMO_MODE=1`) |
 | GET | `/approvals` | approval requests (`?status=PENDING`) |
 | POST | `/approvals/{id}/approve` | approve once → quote unchanged? deny rules (incl. split-order hard max) re-checked → PayPal order; a repeat returns the same order; changed quote → `409`. Needs `X-Approver-Token`; with no `APPROVER_TOKEN` configured → `503` unless `DEMO_MODE=1` |
@@ -578,7 +581,8 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
 
 - **Authentication is local-demo scope (review B6, partly addressed).** There is still no requester identity
   or ownership: anyone who can reach the server can call `/agent/request`, list all orders and approvals,
-  and trigger capture/reconcile of an order (capture only succeeds if the buyer approved on PayPal). What
+  and trigger capture of an order (capture only succeeds if the buyer approved on PayPal). Reconciliation
+  requires the approver token because it may retry create/capture. What
   exists: `/agent/request` has a simple **in-memory per-IP rate limit** (`AGENT_RATE_LIMIT`, per process,
   reset on restart, keyed on the socket address, so it is not a defence behind a proxy or against many
   IPs); approve / reject / cancel need the single shared `APPROVER_TOKEN` (stored in the browser's
@@ -613,7 +617,8 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
   (MCP / `/tools`). Different SKUs, or separate `/agent/request` runs, are judged per order; the daily cap
   is the backstop.
 - **Reconciliation is on demand.** An ambiguous capture is checked once right away; every ambiguous
-  outcome can be re-checked via `POST /orders/{id}/reconcile` (or a capture/return retry); there is no webhook or background job yet. An
+  outcome can be re-checked with **Recheck status** in Orders (approver token required), via
+  `POST /orders/{id}/reconcile`, or a capture/return retry; there is no webhook or background job yet. An
   order whose capture outcome was ambiguous stays reserved (never cancellable or expirable) until PayPal
   reports it `COMPLETED`, declined or `VOIDED`; if PayPal no longer returns the order at all, resolve it by
   hand.

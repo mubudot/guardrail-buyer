@@ -150,8 +150,33 @@ def test_b4_reconcile_endpoint(psvc):
     psvc.paypal.capture_order = lambda oid: (_ for _ in ()).throw(PayPalError("HTTP 503", status_code=503))
     assert psvc.complete_payment(o["paypal_order_id"])["status"] == "NEEDS_RECONCILIATION"
     psvc.paypal.capture_order = real
-    assert c.post(f"/orders/{o['id']}/reconcile").json()["status"] == "COMPLETED"
-    assert c.post("/orders/ORD-NOPE/reconcile").status_code == 404
+    before = psvc.spend_summary()
+    assert c.post(f"/orders/{o['id']}/reconcile").status_code == 401
+    assert c.post(f"/orders/{o['id']}/reconcile", headers={"X-Approver-Token": "wrong"}).status_code == 401
+    assert psvc.spend_summary() == before
+    assert psvc.store.get("orders", o["id"])["status"] == "NEEDS_RECONCILIATION"
+    headers = {"X-Approver-Token": "t"}
+    done = c.post(f"/orders/{o['id']}/reconcile", headers=headers).json()
+    assert done["status"] == "COMPLETED" and done["capture_id"]
+    assert psvc.spend_summary()["reserved"] == "0.00"
+    assert psvc.spend_summary()["captured"] == o["amount"]
+    assert c.post(f"/orders/{o['id']}/reconcile", headers=headers).json()["capture_id"] == done["capture_id"]
+    assert len(psvc.paypal.orders) == 1
+    assert c.post("/orders/ORD-NOPE/reconcile", headers=headers).status_code == 404
+
+
+def test_reconcile_unresolved_keeps_reservation_and_fails_closed_without_configured_token(psvc):
+    o = _approved_order(psvc)
+    psvc.paypal.capture_order = lambda oid: (_ for _ in ()).throw(PayPalError("HTTP 503", status_code=503))
+    assert psvc.complete_payment(o["paypal_order_id"])["status"] == "NEEDS_RECONCILIATION"
+    before = psvc.spend_summary()
+    c = TestClient(create_app(psvc, agent=_NoAgent(), approver_token="t"))
+    r = c.post(f"/orders/{o['id']}/reconcile", headers={"X-Approver-Token": "t"})
+    assert r.status_code == 200 and r.json()["status"] == "NEEDS_RECONCILIATION"
+    assert psvc.spend_summary() == before
+    disabled = TestClient(create_app(psvc, agent=_NoAgent(), approver_token="", demo_mode=False))
+    assert disabled.post(f"/orders/{o['id']}/reconcile").status_code == 503
+    assert psvc.spend_summary() == before
 
 
 def test_b4_agent_keeps_partial_result_on_llm_error(service):

@@ -92,7 +92,8 @@ def test_audit_tab_review4(tmp_path):
             pytest.fail("server did not start")
         r = subprocess.run([NODE, str(ROOT / "scripts" / "ui_review4_jsdom.cjs"), base, "tok",
                             json.dumps({"pending": pending_id, "deny": deny_id, "approval": approval_id})],
-                           env=NODE_ENV, capture_output=True, text=True, timeout=120)
+                           # Match the dashboard harness's allowance for real AG Grid in jsdom.
+                           env=NODE_ENV, capture_output=True, text=True, timeout=300)
         print(r.stdout, r.stderr)
         assert r.returncode == 0 and "UI REVIEW4 OK" in r.stdout, r.stdout + r.stderr
     finally:

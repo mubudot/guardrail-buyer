@@ -149,11 +149,12 @@ const approvalsGrid = agGrid.createGrid($("approvals"), {
 });
 
 /* ---------- orders ---------- */
-// Pay button while the buyer still has to approve on PayPal, else the capture id (always as text).
+// Keep the active control across polls so its focus and disabled state survive refresh().
 class PayCell {
   init(p) { this.gui = document.createElement("span"); this.refresh(p); }
   getGui() { return this.gui; }
   refresh(p) {
+    this.p = p;
     const d = p.data, url = d.status === "PAYER_ACTION_REQUIRED" ? safeUrl(d.approve_url) : null;
     const cur = this.gui.firstElementChild;
     if (url) {
@@ -162,11 +163,42 @@ class PayCell {
       a.href = url; a.target = "_blank"; a.rel = "noopener";
       a.setAttribute("aria-label", `Pay ${d.id} (${usd(d.amount)}) with PayPal, opens in a new tab`);
       if (a !== cur) this.gui.replaceChildren(a);
+    } else if (d.status === "NEEDS_RECONCILIATION") {
+      const b = cur && cur.tagName === "BUTTON" ? cur : document.createElement("button");
+      b.type = "button"; b.className = "btn grid-btn";
+      b.textContent = "Recheck status"; b.dataset.id = d.id; b.dataset.action = "reconcile";
+      b.setAttribute("aria-label", `Recheck payment status for ${d.id} (${usd(d.amount)})`);
+      b.onclick = () => recheckPayment(this.p.data, b);
+      if (b !== cur) this.gui.replaceChildren(b);
     } else {
       this.gui.replaceChildren(document.createTextNode(d.capture_id || ""));
     }
     return true;
   }
+}
+async function recheckPayment(order, btn) {
+  btn.disabled = true;
+  try {
+    if ((!health || !!health.approver_auth) && !tokenInput.value) {
+      const ok = await confirmDialog({title: "Recheck payment status?",
+        intro: "PayPal has not confirmed this payment's outcome yet.",
+        rows: [["Order", order.id], ["Item", `${order.quantity} × ${order.product_name}`],
+               ["Amount", usd(order.amount)]],
+        notes: ["Budget stays reserved until PayPal confirms the outcome."],
+        confirmLabel: "Recheck payment status", needsToken: true,
+        returnFocus: () => [...document.querySelectorAll('#orders button[data-action="reconcile"]')]
+          .find((b) => b.dataset.id === order.id) || $("orders-title")});
+      if (!ok) {
+        btn.disabled = false;
+        if (btn.isConnected) btn.focus();
+        return;
+      }
+    }
+    const r = await api(`/orders/${order.id}/reconcile`, {method: "POST",
+      headers: {"X-Approver-Token": tokenInput.value}});
+    toast(`${order.id}: ${r.status || r.result}`);
+  } catch (e) { toast(`Recheck failed: ${e.message}`, "bad"); }
+  finally { btn.disabled = false; await refresh(); }
 }
 const ordersGrid = agGrid.createGrid($("orders"), {
   columnDefs: [
@@ -182,11 +214,11 @@ const ordersGrid = agGrid.createGrid($("orders"), {
     {field: "status", headerName: "Status", minWidth: 160, maxWidth: 165, cellRenderer: statusCell},
     {field: "paypal_order_id", headerName: "PayPal order", width: 178, suppressSizeToFit: true,
       tooltipField: "paypal_order_id"},
-    // wide enough for a 17-character capture id (e.g. 8VA9873790040992M) and the Pay button
-    {colId: "payment", headerName: "Payment / capture", width: 182, suppressSizeToFit: true, cellRenderer: PayCell, sortable: false, suppressKeyboardEvent: tabThroughControls,
+    // Fits the recovery action as well as the Pay button and capture id.
+    {colId: "payment", headerName: "Payment / capture", width: 190, suppressSizeToFit: true, cellRenderer: PayCell, sortable: false, suppressKeyboardEvent: tabThroughControls,
       tooltipValueGetter: (p) => p.data && p.data.capture_id ? `Capture ${p.data.capture_id}` : null},
   ],
-  ...GRID_BASE, rowData: [], domLayout: "autoHeight",
+  ...GRID_BASE, rowData: [], domLayout: "autoHeight", suppressColumnVirtualisation: true, // payment controls always rendered
   overlayNoRowsTemplate: ORDERS_EMPTY,
   getRowId: (p) => p.data.id,
   onGridSizeChanged: narrowLayout("orders", ["id", "paypal_order_id", "created_at", "quantity", "policy"], "payment"),
@@ -487,12 +519,12 @@ async function doRefresh() {
     const badge = $("approvals-count");
     badge.textContent = pendingRows.length; badge.hidden = !pendingRows.length;
     spendGrid.setGridOption("rowData", [
-      {rule: "Daily cap (captured + reserved)", limit: spend.daily_cap, used: spend.total, remaining: spend.remaining, effect: "NEEDS_APPROVAL"},
+      {rule: "Daily approval threshold", limit: spend.daily_cap, used: spend.total, remaining: spend.remaining, effect: "NEEDS_APPROVAL"},
       {rule: "Per-order cap", limit: spend.per_order_cap, used: null, remaining: null, effect: "NEEDS_APPROVAL"},
       {rule: "Hard max per order", limit: spend.hard_max_per_order, used: null, remaining: null, effect: "DENY"},
       {rule: "Merchant / category allowlist", limit: null, used: null, remaining: null, effect: "DENY"},
     ]);
-    $("spend-day").textContent = `Day ${spend.day} (policy timezone) · ${spend.currency}`;
+    $("spend-day").textContent = `Day ${spend.day} (policy timezone) · ${spend.currency} · captured + reserved; a human may approve past the daily threshold`;
     renderKpis(spend, pendingRows.length);
   } catch (e) {
     conn.fail("core", e);

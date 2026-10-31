@@ -308,10 +308,11 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
                                       "order": {k: v for k, v in out.items() if k not in ("error",)}})
         return out
 
-    @app.post("/orders/{order_id}/reconcile")
+    @app.post("/orders/{order_id}/reconcile", dependencies=[Depends(require_approver)])
     def reconcile_order(order_id: str):
         """Resolve an order whose payment outcome is unknown (NEEDS_RECONCILIATION) from
-        PayPal's order status. Never creates a second charge."""
+        PayPal's order status. Requires the approver token because recovery may retry
+        create/capture. Never creates a second charge."""
         try:
             return svc.reconcile(order_id)
         except KeyError:

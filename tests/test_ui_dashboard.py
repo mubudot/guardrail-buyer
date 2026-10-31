@@ -76,7 +76,9 @@ def test_summary_cards_approval_dialog_and_banner(tmp_path):
         else:
             pytest.fail("server did not start")
         r = subprocess.run([NODE, str(ROOT / "scripts" / "ui_dashboard_jsdom.cjs"), base, "tok", appr["approval_id"]],
-                           env=JSDOM_ENV, capture_output=True, text=True, timeout=150)
+                           # Real AG Grid + theme work is slow in jsdom on loaded machines;
+                           # include the recovery interactions without weakening assertions.
+                           env=JSDOM_ENV, capture_output=True, text=True, timeout=300)
         print(r.stdout, r.stderr)
         assert r.returncode == 0 and "UI DASHBOARD OK" in r.stdout, r.stdout + r.stderr
     finally:

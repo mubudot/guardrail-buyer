@@ -4,7 +4,7 @@
 (() => {
   const CAPS = [
     {key: "per_order_cap", label: "Per-order cap", effect: "above → NEEDS_APPROVAL"},
-    {key: "daily_cap", label: "Daily cap (captured + reserved)", effect: "above → NEEDS_APPROVAL"},
+    {key: "daily_cap", label: "Daily approval threshold (captured + reserved)", effect: "above → NEEDS_APPROVAL (a human may approve past it)"},
     {key: "hard_max_per_order", label: "Hard max per order", effect: "above → DENY (never escalated)"},
   ];
   const LISTS = ["allowed_categories", "allowed_merchants", "blocked_merchants"];
@@ -177,7 +177,7 @@
       series: [
         {type: "bar", xKey: "day", yKey: "captured", yName: "Captured", stacked: true, fill: "#138a4c", tooltip: money},
         {type: "bar", xKey: "day", yKey: "reserved", yName: "Reserved (awaiting payer / unconfirmed)", stacked: true, fill: "#e0a33a", tooltip: money},
-        {type: "line", xKey: "day", yKey: "cap", yName: `Daily cap (now ${usd(h.daily_cap)})`, stroke: "#c0392b",
+        {type: "line", xKey: "day", yKey: "cap", yName: `Daily approval threshold (now ${usd(h.daily_cap)})`, stroke: "#c0392b",
          marker: {enabled: false}, lineDash: [6, 4]},
       ],
       axes: [{type: "category", position: "bottom"},

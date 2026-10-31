@@ -14,6 +14,8 @@
 //     intermediate calls of one attempt, and lists a policy dry-run that was denied (gift card);
 //   - a checkout is opened only for PAYER_ACTION_REQUIRED and a vetted PayPal / mock URL;
 //   - Shift+Tab into a cell with buttons visits them (last first) before leaving the cell.
+//   - uncertain orders expose authenticated rechecks, retain the action on error/unresolved status,
+//     preserve its disabled state during polling, and render the recovered payment state.
 //
 //   node scripts/ui_dashboard_jsdom.cjs http://127.0.0.1:PORT APPROVER_TOKEN APPROVAL_ID
 const {JSDOM, VirtualConsole} = require("jsdom");
@@ -31,12 +33,23 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   const html = await (await fetch(base + "/")).text();
   const posts = [];
   let breakOrders = false, breakAudit = false, emptyAudit = false;
+  let recovery = null, recheckMode = "error", releaseRecheck = null;
   const dom = new JSDOM(html, {
     url: base + "/", runScripts: "dangerously", resources: "usable", pretendToBeVisual: true, virtualConsole: vc,
     beforeParse(w) {
       w.fetch = async (u, o = {}) => {
         const url = String(u);
         if (o.method === "POST") posts.push({url, headers: o.headers || {}});
+        // Controlled provider outcomes: API/service recovery is covered in test_review_fixes.py.
+        if (recovery && url === "/orders") return Response.json([recovery]);
+        if (recovery && url === `/orders/${recovery.id}/reconcile`) {
+          if (recheckMode === "error") return Response.json({detail: "invalid approver token"}, {status: 401});
+          if (recheckMode === "wait") await new Promise((resolve) => { releaseRecheck = resolve; });
+          if (recheckMode === "completed") recovery = {...recovery, status: "COMPLETED", capture_id: "MOCKCAP-RECOVERED"};
+          if (recheckMode === "payable") recovery = {...recovery, status: "PAYER_ACTION_REQUIRED",
+            approve_url: base + "/paypal/mock-checkout?token=MOCK-RECOVERED"};
+          return Response.json(recovery);
+        }
         if (breakOrders && url.startsWith("/orders")) throw new TypeError("Failed to fetch");
         if (breakAudit && url.startsWith("/decisions")) throw new TypeError("Failed to fetch");
         if (emptyAudit && url.startsWith("/decisions?"))
@@ -174,6 +187,53 @@ const until = async (cond, ms = 8000) => { for (let t = 0; t < ms; t += 50) { tr
   await tryDecide({id: "O5", status: "PAYER_ACTION_REQUIRED", approve_url: "https://www.sandbox.paypal.com/checkoutnow?token=B"});
   w.__realApi = realApi; w.eval("api = window.__realApi");
   if (JSON.stringify(w.__opened) !== JSON.stringify(["https://www.sandbox.paypal.com/checkoutnow?token=B"])) fail("opened checkouts: " + JSON.stringify(w.__opened));
+
+  // Recovery row: missing token prompts before POST; failures keep the retry available.
+  // jsdom has no layout width; render the payment column even when it is outside that viewport.
+  w.eval("ordersGrid.setGridOption('suppressColumnVirtualisation', true)");
+  recovery = {id: "ORD-RECHECK", product_name: "USB-C Charging Cable 2m", quantity: 1, amount: "12.99",
+    status: "NEEDS_RECONCILIATION", created_at: new Date().toISOString()};
+  await fresh();
+  const recheck = () => d.querySelector('#orders button[data-action="reconcile"]');
+  await until(() => recheck());
+  if (!recheck() || recheck().textContent !== "Recheck status") fail("uncertain row lacks recovery action");
+  if (!/captured \+ reserved/.test($("spend-day").textContent) || !/approve past the daily threshold/.test($("spend-day").textContent)) fail("daily threshold semantics missing");
+  if (!/daily approval threshold/.test(d.querySelector('[data-kpi="spend"] .k').textContent)) fail("daily figure label");
+  $("token").value = "";
+  const countRechecks = () => posts.filter((p) => p.url.endsWith("/reconcile")).length;
+  recheck().click();
+  await until(() => !$("modal").hidden);
+  if ($("modal-token-row").hidden || countRechecks()) fail("recheck must ask for missing token before POST");
+  $("modal-cancel").click();
+  await until(() => recheck() && !recheck().disabled);
+  if (countRechecks()) fail("cancelled recovery dialog must not POST");
+  recheck().click();
+  await until(() => !$("modal").hidden);
+  $("modal-token").value = "wrong"; $("modal-confirm").click();
+  await until(() => countRechecks() === 1 && recheck() && !recheck().disabled);
+  if (!/Recheck failed/.test($("toast").textContent) || !recheck()) fail("recheck error should be visible and retryable");
+  $("token").value = token;
+  recheckMode = "wait";
+  const pendingButton = recheck(); pendingButton.focus(); pendingButton.click();
+  await until(() => releaseRecheck);
+  await fresh();
+  if (recheck() !== pendingButton || !pendingButton.disabled) fail("poll must retain the pending recovery control");
+  pendingButton.click();
+  if (countRechecks() !== 2) fail("pending recheck must not POST twice");
+  recheckMode = "unknown"; releaseRecheck();
+  await until(() => recheck() && !recheck().disabled);
+  if (!$("toast").textContent.includes("NEEDS_RECONCILIATION")) fail("unresolved result must remain visible");
+  if (posts.filter((p) => p.url.endsWith("/reconcile"))[1].headers["X-Approver-Token"] !== token) fail("recheck needs approver token header");
+  recheckMode = "completed"; recheck().click();
+  await until(() => !recheck() && $("orders").textContent.includes("MOCKCAP-RECOVERED"));
+  if (recheck() || !$("orders").textContent.includes("MOCKCAP-RECOVERED") || !$("toast").textContent.includes("COMPLETED")) fail("completed recovery must update row and show capture id");
+  // An uncertain create can instead recover to awaiting payer approval, showing its checkout link.
+  recovery = {...recovery, status: "NEEDS_RECONCILIATION", capture_id: null};
+  await fresh(); await until(() => recheck());
+  recheckMode = "payable"; recheck().click();
+  await until(() => d.querySelector("#orders a.paypal"));
+  if (recheck() || !d.querySelector("#orders a.paypal")) fail("recovered create must show Pay with PayPal");
+  recovery = null; await fresh();
 
   // Shift+Tab into a cell: last control, then the first, then out
   const cell = d.createElement("div"); cell.className = "ag-cell"; cell.tabIndex = -1;
