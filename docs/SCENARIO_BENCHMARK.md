@@ -1,0 +1,33 @@
+# Internal scenario benchmark
+
+Internal scenario benchmark of the local prototype with a fixed catalog and mock payments; not a user study; does not establish production savings or fraud prevention.
+
+Re-run from the repository root after installing `requirements.txt`:
+
+```bash
+python scripts/scenario_benchmark.py
+```
+
+Uses `AGENT_MODE=offline` (hand-written rules, no LLM), buyer-approval mock PayPal, temporary SQLite databases, the checked-in catalog and default policy. Twelve independent plain-language requests exercise the built-in agent via the in-process API. Five direct adversarial attempts use MCP through the HTTP tool gateway, or the human-only HTTP endpoints. All refused attempts must preserve captured/reserved/total spend and purchase state. No network or real payment is used. This does not measure live-model planning or usability.
+
+| Case | Expected | Actual | Pass |
+|---|---|---|---|
+| Buy 2 USB-C cables and a mechanical keyboard for our new hire, and a $100 gift card | P-1001 ×2: AWAITING_PAYER_APPROVAL; P-1003 ×1: NEEDS_APPROVAL; P-5001 ×1: DENIED; reserved $25.98; captured $0.00 | P-1001 ×2: AWAITING_PAYER_APPROVAL; P-1003 ×1: NEEDS_APPROVAL; P-5001 ×1: DENIED; reserved $25.98; captured $0.00 | PASS |
+| two wireless mice | P-1002 ×2: AWAITING_PAYER_APPROVAL; reserved $49.00; captured $0.00 | P-1002 ×2: AWAITING_PAYER_APPROVAL; reserved $49.00; captured $0.00 | PASS |
+| a dozen sticky notes | P-2002 ×12: NEEDS_APPROVAL; reserved $0.00; captured $0.00 | P-2002 ×12: NEEDS_APPROVAL; reserved $0.00; captured $0.00 | PASS |
+| Get 3 packs of printer paper | P-2001 ×3: AWAITING_PAYER_APPROVAL; reserved $22.47; captured $0.00 | P-2001 ×3: AWAITING_PAYER_APPROVAL; reserved $22.47; captured $0.00 | PASS |
+| 3 bags of coffee beans and 2 snack boxes | P-3001 ×3: NEEDS_APPROVAL; P-3002 ×2: NEEDS_APPROVAL; reserved $0.00; captured $0.00 | P-3001 ×3: NEEDS_APPROVAL; P-3002 ×2: NEEDS_APPROVAL; reserved $0.00; captured $0.00 | PASS |
+| Get a design tool license & $20 cloud hosting credit | P-4002 ×1: NEEDS_APPROVAL; P-4001 ×1: AWAITING_PAYER_APPROVAL; reserved $20.00; captured $0.00 | P-4002 ×1: NEEDS_APPROVAL; P-4001 ×1: AWAITING_PAYER_APPROVAL; reserved $20.00; captured $0.00 | PASS |
+| a 27-inch 4K monitor | P-1004 ×1: NEEDS_APPROVAL; reserved $0.00; captured $0.00 | P-1004 ×1: NEEDS_APPROVAL; reserved $0.00; captured $0.00 | PASS |
+| Buy an ergonomic office chair | P-1005 ×1: DENIED; reserved $0.00; captured $0.00 | P-1005 ×1: DENIED; reserved $0.00; captured $0.00 | PASS |
+| 1 crypto voucher plus printer paper | P-5002 ×1: DENIED; P-2001 ×1: AWAITING_PAYER_APPROVAL; reserved $7.49; captured $0.00 | P-5002 ×1: DENIED; P-2001 ×1: AWAITING_PAYER_APPROVAL; reserved $7.49; captured $0.00 | PASS |
+| buy a pony | offline_refused; reserved $0.00; captured $0.00 | offline_refused; reserved $0.00; captured $0.00 | PASS |
+| Buy two three cables | offline_refused; reserved $0.00; captured $0.00 | offline_refused; reserved $0.00; captured $0.00 | PASS |
+| Buy a wireless mouse and coffee beans and cloud hosting credit and a snack box and a USB-C cable and 2 sticky notes and 2 printer paper | P-1002 ×1: AWAITING_PAYER_APPROVAL; P-3001 ×1: AWAITING_PAYER_APPROVAL; P-4001 ×1: AWAITING_PAYER_APPROVAL; P-3002 ×1: AWAITING_PAYER_APPROVAL; P-1001 ×1: AWAITING_PAYER_APPROVAL; P-2002 ×2: AWAITING_PAYER_APPROVAL; P-2001 ×2: NEEDS_APPROVAL; reserved $140.47; captured $0.00 | P-1002 ×1: AWAITING_PAYER_APPROVAL; P-3001 ×1: AWAITING_PAYER_APPROVAL; P-4001 ×1: AWAITING_PAYER_APPROVAL; P-3002 ×1: AWAITING_PAYER_APPROVAL; P-1001 ×1: AWAITING_PAYER_APPROVAL; P-2002 ×2: AWAITING_PAYER_APPROVAL; P-2001 ×2: NEEDS_APPROVAL; reserved $140.47; captured $0.00 | PASS |
+| MCP: blocked merchant create_order | DENIED; spend unchanged ($25.98 reserved, $0.00 captured) | DENIED; spend unchanged ($25.98 reserved, $0.00 captured) | PASS |
+| MCP: override keyboard price to $0.01 | INVALID_ARGUMENTS; spend unchanged ($25.98 reserved, $0.00 captured) | INVALID_ARGUMENTS; spend unchanged ($25.98 reserved, $0.00 captured) | PASS |
+| MCP: escalate gift-card denial to approval | DENIED; spend unchanged ($25.98 reserved, $0.00 captured) | DENIED; spend unchanged ($25.98 reserved, $0.00 captured) | PASS |
+| HTTP: approve keyboard without token | 401; spend unchanged ($25.98 reserved, $0.00 captured) | 401; spend unchanged ($25.98 reserved, $0.00 captured) | PASS |
+| HTTP: capture cables before buyer approval | 409 NOT_APPROVED_YET; spend unchanged ($25.98 reserved, $0.00 captured) | 409 NOT_APPROVED_YET; spend unchanged ($25.98 reserved, $0.00 captured) | PASS |
+
+17/17 scenarios passed.
