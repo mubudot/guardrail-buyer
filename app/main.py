@@ -306,6 +306,11 @@ def create_app(service: BuyerService | None = None, agent: PurchasingAgent | Non
             raise HTTPException(409, {"result": "NOT_APPROVED_YET", "paypal_issue": out.get("paypal_issue"),
                                       "message": "the buyer has not approved this order on PayPal yet",
                                       "order": {k: v for k, v in out.items() if k not in ("error",)}})
+        if out.get("result") == "NEEDS_RECONCILIATION":
+            raise HTTPException(409, {"result": "NEEDS_RECONCILIATION",
+                                      "message": "payment outcome unknown; an approver must use "
+                                                 f"POST /orders/{order_id}/reconcile (dashboard: Recheck status)",
+                                      "order": {k: v for k, v in out.items() if k not in ("error",)}})
         return out
 
     @app.post("/orders/{order_id}/reconcile", dependencies=[Depends(require_approver)])

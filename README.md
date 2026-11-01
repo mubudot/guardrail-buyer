@@ -504,7 +504,7 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 | POST | `/agent/request` | `{"request": "..."}` — run the agent; returns final text, transcript, token usage. Rate-limited per client IP (`AGENT_RATE_LIMIT`, default 20/60 s) → `429` |
 | GET | `/orders` | all orders (`?status=COMPLETED`) with the policy decision attached |
 | GET | `/orders/{id}` | one order; `?refresh=true` (default) adds `paypal_live_status` from PayPal |
-| POST | `/orders/{id}/capture` | capture after buyer approval (fallback for a lost redirect); not approved yet → `409 NOT_APPROVED_YET` |
+| POST | `/orders/{id}/capture` | capture after buyer approval (fallback for a lost redirect); not approved yet → `409 NOT_APPROVED_YET`; outcome unknown → `409 NEEDS_RECONCILIATION` (use `/reconcile`) |
 | POST | `/orders/{id}/reconcile` | resolve a `NEEDS_RECONCILIATION` order from PayPal's order status (approver token required; never charges twice); dashboard: **Recheck status** |
 | POST | `/orders/{id}/cancel` | cancel an order still awaiting the buyer, release its reservation (approver token); otherwise `409`; `503` when no `APPROVER_TOKEN` is configured (unless `DEMO_MODE=1`) |
 | GET | `/approvals` | approval requests (`?status=PENDING`) |
@@ -582,7 +582,8 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
 - **Authentication is local-demo scope (review B6, partly addressed).** There is still no requester identity
   or ownership: anyone who can reach the server can call `/agent/request`, list all orders and approvals,
   and trigger capture of an order (capture only succeeds if the buyer approved on PayPal). Reconciliation
-  requires the approver token because it may retry create/capture. What
+  requires the approver token because it may retry create/capture; the public capture and PayPal-return
+  routes leave a `NEEDS_RECONCILIATION` order untouched (`409` / redirect with its status). What
   exists: `/agent/request` has a simple **in-memory per-IP rate limit** (`AGENT_RATE_LIMIT`, per process,
   reset on restart, keyed on the socket address, so it is not a defence behind a proxy or against many
   IPs); approve / reject / cancel need the single shared `APPROVER_TOKEN` (stored in the browser's
@@ -618,7 +619,7 @@ This is a hackathon demo meant to run locally. Be precise about what it does and
   is the backstop.
 - **Reconciliation is on demand.** An ambiguous capture is checked once right away; every ambiguous
   outcome can be re-checked with **Recheck status** in Orders (approver token required), via
-  `POST /orders/{id}/reconcile`, or a capture/return retry; there is no webhook or background job yet. An
+  `POST /orders/{id}/reconcile`; there is no webhook or background job yet. An
   order whose capture outcome was ambiguous stays reserved (never cancellable or expirable) until PayPal
   reports it `COMPLETED`, declined or `VOIDED`; if PayPal no longer returns the order at all, resolve it by
   hand.

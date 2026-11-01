@@ -461,7 +461,9 @@ class BuyerService(ReportingMixin, PolicyAdminMixin):
 
     def capture(self, oid: str) -> dict[str, Any]:
         """Try to capture an open order (e.g. buyer approved but the redirect was lost).
-        Returns result=NOT_APPROVED_YET without changing anything if the buyer has not approved."""
+        Returns result=NOT_APPROVED_YET without changing anything if the buyer has not approved,
+        and result=NEEDS_RECONCILIATION without changing anything if the payment outcome is
+        unknown (only reconcile(), behind the approver token, recovers those)."""
         self.expire_stale()
         o = self.store.get("orders", oid)
         if o is None:
@@ -471,7 +473,9 @@ class BuyerService(ReportingMixin, PolicyAdminMixin):
         if o["status"] == "CAPTURING":
             return {**o, "result": "CAPTURE_IN_PROGRESS"}
         if o["status"] == "NEEDS_RECONCILIATION":
-            return self.reconcile(oid)
+            # Recovery may retry create/capture, so it stays behind the approver token
+            # (POST /orders/{id}/reconcile); the public capture/return routes change nothing.
+            return {**o, "result": "NEEDS_RECONCILIATION"}
         if o["status"] != "PAYER_ACTION_REQUIRED":
             raise ValueError(f"order {oid} is {o['status']}, cannot capture")
         out = self._capture(oid)
