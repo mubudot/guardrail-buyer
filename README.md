@@ -545,8 +545,8 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 | `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET` | – | Sandbox REST app credentials (`oauth` mode) |
 | `PUBLIC_BASE_URL` | `http://localhost:8000` | base of the PayPal return / cancel URLs |
 | `PAYPAL_APPROVAL_TTL_MIN` | `180` | unapproved orders expire and release their reservation |
-| `APPROVER_TOKEN` | – | required for approve / reject / cancel. Empty = those endpoints answer `503` (fail closed) |
-| `DEMO_MODE` | `0` | `1` = explicit local demo: an empty `APPROVER_TOKEN` leaves approve / reject / cancel open (logs a warning) |
+| `APPROVER_TOKEN` | – | required for approve / reject / cancel / reconcile (**Recheck status**). Empty = those endpoints answer `503` (fail closed) |
+| `DEMO_MODE` | `0` | `1` = explicit local demo: an empty `APPROVER_TOKEN` leaves approve / reject / cancel / reconcile open (logs a warning) |
 | `AGENT_RATE_LIMIT` | `20/60` | max `/agent/request` calls per client IP per window (`N/SECONDS`, both positive whole numbers); `off` disables. Anything else (e.g. `0/60`) stops the server at startup with a clear error. In-memory, per process |
 | `STATE_SECRET` | random, stored in the DB | HMAC key for the signed cancel `state` |
 | `POLICY_OWNER_TOKEN` | – (falls back to `APPROVER_TOKEN`) | required by `PUT /policy` (`X-Owner-Token`); with neither set, policy editing answers `503` unless `DEMO_MODE=1` |
