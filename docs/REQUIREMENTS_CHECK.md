@@ -8,11 +8,11 @@ submission were not independently re-verified in this implementation pass.
 | Surface | Current status | Reference |
 |---|---|---|
 | Repository | Public, with the MIT `LICENSE` in source | [mubudot/guardrail-buyer](https://github.com/mubudot/guardrail-buyer) |
-| Demo video | Public on YouTube, 2:18 | [Published demo](https://youtu.be/6pp8X-yFJwk) |
+| Demo video | Public on YouTube, 2:33 (v3) | [Published demo](https://youtu.be/RhKllaIB0rg) |
 | Devpost | Submitted | Local submission copy: [DEVPOST.md](DEVPOST.md) |
 
 Changes made after the Devpost submission (pitch focus, scenario benchmark, payment recheck action)
-are listed in the git history; the published video and narration are unchanged. Judges can use the local offline
+are listed in the git history; the demo video was replaced on 2026-11-01 by the re-edited v3 cut (2:33, https://youtu.be/RhKllaIB0rg). Judges can use the local offline
 setup without accounts; real Sandbox verification requires their own free Sandbox app and buyer.
 TTS source and license evidence, including its verification limits, is in [VIDEO_SCRIPT.md](VIDEO_SCRIPT.md#tts-source-and-license-evidence).
 
@@ -52,7 +52,7 @@ Legend: ✅ done · 🟡 partly / needs a decision · ❌ not done yet
 | 11 | Public repo (GitHub/GitLab/Bitbucket) with all source, assets, instructions | ❌ | Repo is local only by design until the user confirms. Needs: create public GitHub repo, push (G4) |
 | 12 | Open-source licence file, detectable in the repo "About" section | 🟡 | `LICENSE` = MIT (GitHub detects it). Check About once pushed |
 | 13 | Identify which AI tools were used | ✅ | README "AI tools used" + `docs/DEVPOST.md`: Claude (runtime agent), Hark (coding assistant), OpenAI Codex CLI (independent reviewer), Piper TTS (narration); offline parser is not AI |
-| 14 | Demo video < 3 min, shows the project working, public on YouTube, link on form | 🟡 | v2 cut 2:18 (138.4 s, kept outside the repo): live run of the polished dashboard on the real PayPal Sandbox with Claude (mixed request → order / approval / refusal, approval dialog, buyer cancel), then the real Sandbox buyer login → Pay → capture `COMPLETED` clip recorded earlier the same day (run `ORD-F79F379F1E` / capture `14579671MH105231J`, `docs/SANDBOX_E2E.md`), labelled "Sandbox buyer approval — recorded 2026-10-30", before the closing card. OCR-checked (1 fps, 138 frames) for personal data; two Codex video passes, no material issues. Remaining: YouTube upload by the user (G1) |
+| 14 | Demo video < 3 min, shows the project working, public on YouTube, link on form | ✅ | Published v3 cut 2:33 (https://youtu.be/RhKllaIB0rg; `docs/VIDEO_SCRIPT.md`), re-edited from the v2 footage. Earlier v2 cut 2:18 (138.4 s, kept outside the repo): live run of the polished dashboard on the real PayPal Sandbox with Claude (mixed request → order / approval / refusal, approval dialog, buyer cancel), then the real Sandbox buyer login → Pay → capture `COMPLETED` clip recorded earlier the same day (run `ORD-F79F379F1E` / capture `14579671MH105231J`, `docs/SANDBOX_E2E.md`), labelled "Sandbox buyer approval — recorded 2026-10-30", before the closing card. OCR-checked (1 fps, 138 frames) for personal data; two Codex video passes, no material issues. The v2 upload was later done (https://youtu.be/6pp8X-yFJwk) and replaced on the form by v3 |
 | 14b | Video numbers match the repo | ✅ | Closing card and narration say "400+ automated tests" / "more than four hundred automated tests" (suite: 421 = 418 passed + 3 skipped without jsdom, 420 passed + 1 skipped with jsdom), wording that stays true as tests are added. v2 cut 2:18 (138.4 s) |
 | 15 | Video: no third-party trademarks / copyrighted music without permission | ✅ (draft) | No music; Piper narration credited; only PayPal's own Sandbox pages, AG Grid, Claude named |
 | 16 | Testing access free until judging ends; include test credentials / sandbox login details or clear instructions to obtain access | 🟡 | README explains creating a free Sandbox app + personal test account; mock mode needs nothing. Decision on publishing throwaway Sandbox credentials still open (G3) |

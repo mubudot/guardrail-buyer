@@ -15,7 +15,7 @@ It binds approvals to exact quotes and keeps budget reserved when a payment outc
 [live MCP adversarial run](docs/MCP_LIVE_SMOKE.md) ·
 [internal scenario benchmark](docs/SCENARIO_BENCHMARK.md) (offline rules and mock payments; not a user study).
 
-**Demo video (2:18):** https://youtu.be/6pp8X-yFJwk
+**Demo video (2:33):** https://youtu.be/RhKllaIB0rg
 
 **Try it locally:** paste the [offline block](#no-keys-no-network-copy-paste-offline-block)
 (no AI key or PayPal account). It starts the dashboard and sends the mixed request above. Open the
@@ -494,8 +494,10 @@ Chromium (Playwright) drives the dashboard and records the screen → ffmpeg cut
 time and lays the narration on top → `docs/demo_draft.mp4`. No music. The Sandbox buyer login (scene 7) is
 recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_EMAIL` /
 `SANDBOX_BUYER_PASSWORD` (environment only); without them scene 7 is a labelled placeholder card
-(see `docs/VIDEO_SCRIPT.md`). The prepared 2:18 cut is a `--skip-checkout` take of the current dashboard
-(real Sandbox + Claude) followed by the real buyer-approval clip from an earlier take, labelled on screen.
+(see `docs/VIDEO_SCRIPT.md`). The published 2:33 cut (v3) re-edits the `--skip-checkout` take of the dashboard
+(real Sandbox + Claude) and the real buyer-approval clip from an earlier take (labelled on screen), and adds an MCP
+gateway card built from the offline scenario benchmark plus a short audit / policy segment recorded on a local build
+with mock payments (both labelled on screen).
 
 ## REST API
 
@@ -569,9 +571,9 @@ recorded only when a Sandbox *personal* test account is given in `SANDBOX_BUYER_
 - [x] AG Grid **Audit** tab: every guardrail decision with column filters, quick search, risk highlighting, CSV export and a detail panel (quote, rules evaluated, payment timeline)
 - [x] Offline rule-based agent mode for running without an AI key (`AGENT_MODE=offline`)
 - [x] Bring your own model: Anthropic Messages or any OpenAI-compatible endpoint (`LLM_PROVIDER`)
-- [x] Demo video (2:18): live run of the current dashboard against the real PayPal Sandbox with Claude, plus the real Sandbox buyer approval clip recorded earlier the same day (labelled on screen), placed before the closing card ([public on YouTube](https://youtu.be/6pp8X-yFJwk); Devpost submitted, per entrant status)
-- [x] MCP server: the guarded tools for any MCP agent (Claude Desktop, Codex …), remote + embedded offline modes, prompt-injection tests, live Codex run ([`docs/MCP_LIVE_SMOKE.md`](docs/MCP_LIVE_SMOKE.md)) — not shown in the video
-- [x] AG Grid **Policy & spend** tab: owner-token protected policy editor with server validation and change history, spend-over-time chart (AG Charts Community) — present in the current build, not demonstrated in the video
+- [x] Demo video (2:33, v3): live run of the dashboard against the real PayPal Sandbox with Claude and the real Sandbox buyer approval clip (labelled on screen), then the MCP gateway refusals from the offline benchmark and the audit / policy pages on a local mock build (labelled) ([public on YouTube](https://youtu.be/RhKllaIB0rg); Devpost submitted, per entrant status)
+- [x] MCP server: the guarded tools for any MCP agent (Claude Desktop, Codex …), remote + embedded offline modes, prompt-injection tests, live Codex run ([`docs/MCP_LIVE_SMOKE.md`](docs/MCP_LIVE_SMOKE.md)) — the video shows the offline benchmark's refusals, not the live Codex run
+- [x] AG Grid **Policy & spend** tab: owner-token protected policy editor with server validation and change history, spend-over-time chart (AG Charts Community) — cap editing and change history shown briefly in the video (local mock build)
 - [ ] PayPal webhooks (`CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`) with signature verification
 - [ ] PayPal Agent Toolkit for read-only / merchant-side tasks behind the same gateway
 

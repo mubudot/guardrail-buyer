@@ -1,9 +1,9 @@
-# Demo video script — GuardRail Buyer (v2 cut 2:18, hard limit < 3:00)
+# Demo video script — GuardRail Buyer (published v3 cut 2:33, hard limit < 3:00)
 
 No music (narration only). Voice: Piper TTS, voice `en_US-libritts_r-medium` (trained on LibriTTS-R, CC BY 4.0,
 credited on the closing card). Only on-screen brands: PayPal's own Sandbox checkout (the sponsor's product), AG Grid
-(sponsor), Claude (named as the model used). Narration text lives in `scripts/video/scenes.json`; keep it in sync
-with this file.
+(sponsor), Claude (named as the model used). Narration for the v2 take lives in `scripts/video/scenes.json`; keep it in sync
+with this file. The new v3 lines (scenes 1 and 7–10 below) were generated outside the repo and are quoted here.
 
 ## TTS source and license evidence
 
@@ -30,7 +30,27 @@ These are attribution notes only; the published narration and scene text below a
   The voice card does not separately state a weights/output license; the dataset license alone
   does not establish every model asset's reuse terms. No broader rights clearance is claimed here.
 
-## v2 cut (2026-10-30, current)
+## v3 cut (2026-11-01, published: https://youtu.be/RhKllaIB0rg)
+
+2:33 (153.0 s), 1920×1080, 30 fps, H.264 + AAC, kept outside the repo; same Piper voice, no music. It re-edits the v2
+footage below (live Sandbox + Claude take and the labelled buyer-approval clip) and adds two labelled segments: an MCP
+gateway card whose rows come from the offline scenario benchmark (`scripts/scenario_benchmark.py`, payments mocked)
+and a short audit / Policy & spend segment recorded on a local build ("Local build · offline agent · mock payments").
+The one-off assembly (ffmpeg, cards, new narration) is kept outside the repo. Checks: OCR at 2 fps (306 frames: no
+personal email, name, key or private host) and three independent review passes ending in "no material issues".
+
+| # | Time | On screen | Narration |
+|---|---|---|---|
+| 1 | 0:00–0:08 | Title card (who it is for). | For office managers: let an AI prepare purchases, while you control the budget. Here is one request, with three outcomes, on the real PayPal Sandbox. |
+| 2–3 | 0:08–0:38 | v2 scenes 4–5: the mixed request and its three outcomes (order / approval / deny). | v2 lines, trimmed. |
+| 4 | 0:38–1:05 | v2 scene 8: the real Sandbox buyer approval clip → `COMPLETED`, labelled "recorded 2026-10-30". | v2 scene-8 lines. |
+| 5–6 | 1:05–1:32 | v2 scenes 6–7: approve with confirmation dialog; buyer cancel releases the reservation. | v2 lines, trimmed. |
+| 7 | 1:32–1:52 | "MCP gateway: direct tool attempts": MCP `create_order` (blocked merchant) → `DENIED`; MCP `create_order` `price=0.01` → `INVALID_ARGUMENTS`; MCP `request_approval` escalating the gift-card deny → `DENIED`; HTTP approve without token → `401`; HTTP capture before buyer approval → `409 NOT_APPROVED_YET`. | The same gate protects any MCP client. In our offline scenario benchmark, with payments mocked, direct attempts are refused: a blocked merchant is denied, a price override is rejected as an invalid argument, and a denial cannot be escalated. Approving without the token returns four oh one, and capturing before the buyer approves returns four oh nine. Spend does not move. |
+| 8 | 1:52–2:05 | Local mock build: Audit tab (filter · search · export CSV) → row detail (quote, rules evaluated, payment timeline) → Policy & spend cap edit with change history. | Every decision lands in an audit trail that a finance lead can filter and export. Click a row to see the quote, each rule evaluated, and the payment timeline. The owner edits caps right in the grid. The server validates each change and keeps a history. |
+| 9 | 2:05–2:18 | Policy recap card (default policy). | Under the hood, a deterministic policy engine sits between the model and PayPal. Orders within the caps go to PayPal for the buyer to approve, anything over a cap waits for a human, and a deny is final. The model cannot argue past it. |
+| 10 | 2:18–2:33 | Closing card: stack, MIT, 400+ automated tests, offline mode, TTS credit. | GuardRail Buyer is built with Claude tool use, PayPal Orders version two, FastAPI, and AG Grid. It is open source, with more than four hundred automated tests, and an offline mode lets judges run it without an AI key. Let agents spend, inside your guardrails. |
+
+## v2 cut (2026-10-30, previous; still on YouTube at https://youtu.be/6pp8X-yFJwk)
 
 2:18 (138.4 s), 1280×720, H.264 + AAC, kept outside the repo. Order: scenes 1–7 are one live take of the polished
 dashboard (`scripts/video/record_demo.py --skip-checkout`) against the **real PayPal Sandbox API** with **Claude

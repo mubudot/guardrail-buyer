@@ -62,8 +62,9 @@ prompt injection (buy a gift card from a blocked merchant, a $640 chair over the
 `price=0.01`, approve itself): every attempt was refused by the server, while the legitimate order went
 through.
 
-*The demo video shows the dashboard flow with the built-in agent; the MCP server and the Policy & spend tab are in
-the current build but are not demonstrated in the video (README: "Use it from any MCP agent" and the Policy & spend
+*The demo video shows the dashboard flow with the built-in agent on the live Sandbox, then briefly the MCP gateway's
+refusals from the offline scenario benchmark and the audit / Policy & spend pages on a local mock build (both labelled
+on screen); the live Codex MCP run is documented, not filmed (README: "Use it from any MCP agent" and the Policy & spend
 tab, repro steps 10–11).*
 
 ## How we built it
@@ -139,9 +140,11 @@ tab, repro steps 10–11).*
   tools; it never chooses prices or merchants (they come from the server catalog), cannot escalate a
   DENY, cannot reuse an approval or change its amount, and cannot get around the caps by firing
   requests in parallel or by splitting one item into several orders within a request.
-- The demo video (2:18) is a live run of the current dashboard against the real PayPal Sandbox with Claude, and it
-  ends with a clip from a second real run recorded earlier the same day and labelled on screen (order `ORD-F79F379F1E`
-  → PayPal capture `14579671MH105231J`, `COMPLETED`): the Sandbox buyer logs in and pays on PayPal.
+- The demo video (2:33) is a live run of the dashboard against the real PayPal Sandbox with Claude, including a
+  clip from a second real run recorded earlier the same day and labelled on screen (order `ORD-F79F379F1E`
+  → PayPal capture `14579671MH105231J`, `COMPLETED`): the Sandbox buyer logs in and pays on PayPal. It then shows
+  the MCP gateway refusing direct tool attempts (offline benchmark, payments mocked) and the audit and policy pages
+  on a local mock build, both labelled on screen.
 - Any MCP agent can now be given a budget instead of a wallet: a live Codex session that deliberately tried
   every injected instruction got `DENIED` / `INVALID_ARGUMENTS` from the server for each one
   (`docs/MCP_LIVE_SMOKE.md`).
@@ -235,4 +238,4 @@ uvicorn app.main:app --port 8000
   `python scripts/sandbox_smoke.py` checks the live Sandbox integration without a buyer login.
 - No real money is involved anywhere; the PayPal side is Sandbox or a local mock.
 
-**Repo:** `https://github.com/mubudot/guardrail-buyer` (MIT) · **Video:** `https://youtu.be/6pp8X-yFJwk`
+**Repo:** `https://github.com/mubudot/guardrail-buyer` (MIT) · **Video:** `https://youtu.be/RhKllaIB0rg`
